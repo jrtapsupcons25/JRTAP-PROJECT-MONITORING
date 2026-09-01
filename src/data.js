@@ -1,0 +1,167 @@
+import { db, supabase } from './supabase.js';
+
+function must(result, what) {
+  if (result.error) {
+    console.error(what, result.error);
+    throw new Error(result.error.message || `Failed: ${what}`);
+  }
+  return result.data;
+}
+
+/* ---------------- projects ---------------- */
+export async function fetchProjects() {
+  return must(await db.from('projects').select('*').order('created_at', { ascending: false }), 'fetchProjects');
+}
+export async function createProject(fields) {
+  return must(await db.from('projects').insert(fields).select().single(), 'createProject');
+}
+export async function updateProject(id, patch) {
+  return must(await db.from('projects').update(patch).eq('id', id).select().single(), 'updateProject');
+}
+
+/* ---------------- team ---------------- */
+export async function fetchTeamMembers() {
+  return must(await db.from('team_members').select('*').order('full_name', { ascending: true }), 'fetchTeamMembers');
+}
+
+/* ---------------- material requests ---------------- */
+export async function fetchMaterialRequests(filter = {}) {
+  let q = db.from('material_requests').select('*').order('created_at', { ascending: false });
+  if (filter.projectId) q = q.eq('project_id', filter.projectId);
+  return must(await q, 'fetchMaterialRequests');
+}
+export async function createMaterialRequest(fields) {
+  return must(await db.from('material_requests').insert(fields).select().single(), 'createMaterialRequest');
+}
+export async function decideMaterialRequest(id, patch) {
+  return must(await db.from('material_requests').update(patch).eq('id', id).select().single(), 'decideMaterialRequest');
+}
+
+/* ---------------- petty cash requests ---------------- */
+export async function fetchPettyCashRequests(filter = {}) {
+  let q = db.from('petty_cash_requests').select('*').order('created_at', { ascending: false });
+  if (filter.projectId) q = q.eq('project_id', filter.projectId);
+  return must(await q, 'fetchPettyCashRequests');
+}
+export async function createPettyCashRequest(fields) {
+  return must(await db.from('petty_cash_requests').insert(fields).select().single(), 'createPettyCashRequest');
+}
+export async function decidePettyCashRequest(id, patch) {
+  return must(await db.from('petty_cash_requests').update(patch).eq('id', id).select().single(), 'decidePettyCashRequest');
+}
+
+/* ---------------- daily logs ---------------- */
+export async function fetchDailyLogs(filter = {}) {
+  let q = db.from('daily_logs').select('*').order('log_date', { ascending: false }).order('created_at', { ascending: false });
+  if (filter.projectId) q = q.eq('project_id', filter.projectId);
+  return must(await q, 'fetchDailyLogs');
+}
+export async function fetchDailyLogMaterials(logIds) {
+  if (!logIds || logIds.length === 0) return [];
+  return must(await db.from('daily_log_materials').select('*').in('log_id', logIds), 'fetchDailyLogMaterials');
+}
+export async function createDailyLog(fields) {
+  return must(await db.from('daily_logs').insert(fields).select().single(), 'createDailyLog');
+}
+export async function createDailyLogMaterials(logId, rows) {
+  if (!rows || rows.length === 0) return [];
+  const payload = rows.map((r) => ({ ...r, log_id: logId }));
+  return must(await db.from('daily_log_materials').insert(payload).select(), 'createDailyLogMaterials');
+}
+
+/* ---------------- workers ---------------- */
+export async function fetchWorkers(projectId) {
+  let q = db.from('workers').select('*').order('full_name', { ascending: true });
+  if (projectId) q = q.eq('project_id', projectId);
+  return must(await q, 'fetchWorkers');
+}
+export async function createWorker(fields) {
+  return must(await db.from('workers').insert(fields).select().single(), 'createWorker');
+}
+export async function updateWorker(id, patch) {
+  return must(await db.from('workers').update(patch).eq('id', id).select().single(), 'updateWorker');
+}
+
+/* ---------------- attendance ---------------- */
+export async function fetchAttendance(projectId) {
+  let q = db.from('attendance').select('*');
+  if (projectId) q = q.eq('project_id', projectId);
+  return must(await q, 'fetchAttendance');
+}
+export async function upsertAttendance(rows) {
+  if (!rows || rows.length === 0) return [];
+  return must(
+    await db.from('attendance').upsert(rows, { onConflict: 'worker_id,work_date' }).select(),
+    'upsertAttendance'
+  );
+}
+
+/* ---------------- advances ---------------- */
+export async function fetchAdvances(projectId) {
+  let q = db.from('advances').select('*').order('given_at', { ascending: false });
+  if (projectId) q = q.eq('project_id', projectId);
+  return must(await q, 'fetchAdvances');
+}
+export async function createAdvance(fields) {
+  return must(await db.from('advances').insert(fields).select().single(), 'createAdvance');
+}
+
+/* ---------------- direct materials ---------------- */
+export async function fetchDirectMaterials(projectId) {
+  let q = db.from('direct_materials').select('*').order('logged_at', { ascending: false });
+  if (projectId) q = q.eq('project_id', projectId);
+  return must(await q, 'fetchDirectMaterials');
+}
+export async function createDirectMaterial(fields) {
+  return must(await db.from('direct_materials').insert(fields).select().single(), 'createDirectMaterial');
+}
+
+/* ---------------- direct expenses ---------------- */
+export async function fetchDirectExpenses(projectId) {
+  let q = db.from('direct_expenses').select('*').order('logged_at', { ascending: false });
+  if (projectId) q = q.eq('project_id', projectId);
+  return must(await q, 'fetchDirectExpenses');
+}
+export async function createDirectExpense(fields) {
+  return must(await db.from('direct_expenses').insert(fields).select().single(), 'createDirectExpense');
+}
+
+/* ---------------- project assignments (site-role scoping) ---------------- */
+export async function fetchProjectAssignments(projectId) {
+  let q = db.from('project_assignments').select('*');
+  if (projectId) q = q.eq('project_id', projectId);
+  return must(await q, 'fetchProjectAssignments');
+}
+export async function assignMemberToProject(projectId, memberId, assignedBy) {
+  return must(
+    await db
+      .from('project_assignments')
+      .upsert({ project_id: projectId, member_id: memberId, assigned_by: assignedBy }, { onConflict: 'project_id,member_id', ignoreDuplicates: true }),
+    'assignMemberToProject'
+  );
+}
+export async function unassignMemberFromProject(projectId, memberId) {
+  return must(
+    await db.from('project_assignments').delete().eq('project_id', projectId).eq('member_id', memberId),
+    'unassignMemberFromProject'
+  );
+}
+
+/* ---------------- storage (site photos) ---------------- */
+const PHOTO_BUCKET = 'siteops-photos';
+
+export async function uploadLogPhoto(projectId, file) {
+  const path = `${projectId}/${Date.now()}-${file.name}`;
+  const { error } = await supabase.storage.from(PHOTO_BUCKET).upload(path, file);
+  if (error) throw new Error(error.message || 'Photo upload failed');
+  return path;
+}
+
+export async function getPhotoSignedUrl(path) {
+  const { data, error } = await supabase.storage.from(PHOTO_BUCKET).createSignedUrl(path, 3600);
+  if (error) {
+    console.error('getPhotoSignedUrl', error);
+    return null;
+  }
+  return data?.signedUrl || null;
+}
