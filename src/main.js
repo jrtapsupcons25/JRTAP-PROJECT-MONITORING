@@ -114,6 +114,7 @@ function setupRealtime() {
     'advances',
     'direct_materials',
     'direct_expenses',
+    'progress_updates',
   ];
   let channel = supabase.channel('siteops-live');
   tables.forEach((table) => {

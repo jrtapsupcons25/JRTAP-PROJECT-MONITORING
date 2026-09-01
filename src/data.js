@@ -147,6 +147,19 @@ export async function unassignMemberFromProject(projectId, memberId) {
   );
 }
 
+/* ---------------- accomplishment (% progress) updates ---------------- */
+export async function fetchProgressUpdates(projectId) {
+  let q = db.from('progress_updates').select('*').order('update_date', { ascending: true });
+  if (projectId) q = q.eq('project_id', projectId);
+  return must(await q, 'fetchProgressUpdates');
+}
+export async function createProgressUpdate(fields) {
+  return must(await db.from('progress_updates').insert(fields).select().single(), 'createProgressUpdate');
+}
+export async function deleteProgressUpdate(id) {
+  return must(await db.from('progress_updates').delete().eq('id', id), 'deleteProgressUpdate');
+}
+
 /* ---------------- storage (site photos) ---------------- */
 const PHOTO_BUCKET = 'siteops-photos';
 

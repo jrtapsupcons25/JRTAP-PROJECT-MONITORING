@@ -35,8 +35,13 @@ import {
   fetchProjectAssignments,
   assignMemberToProject,
   unassignMemberFromProject,
+  fetchProgressUpdates,
+  createProgressUpdate,
+  deleteProgressUpdate,
 } from '../data.js';
 import { weeklyPayrollForWorkers } from '../payroll.js';
+import { scheduleStatus } from '../progress.js';
+import { buildProgressChart } from './progressChart.js';
 import { navigate, projectHash } from '../router.js';
 import { openProjectModal } from './projects.js';
 import { openLogModal } from './logs.js';
@@ -114,13 +119,14 @@ function memberName(id) {
 /* ==================== OVERVIEW ==================== */
 async function paintOverview(el, project) {
   const approver = isApprover();
-  const [materials, pettycash, workers, attendance, advances, assignments] = await Promise.all([
+  const [materials, pettycash, workers, attendance, advances, assignments, progressUpdates] = await Promise.all([
     fetchMaterialRequests({ projectId: project.id }),
     fetchPettyCashRequests({ projectId: project.id }),
     fetchWorkers(project.id),
     fetchAttendance(project.id),
     fetchAdvances(project.id),
     approver ? fetchProjectAssignments(project.id) : Promise.resolve([]),
+    fetchProgressUpdates(project.id),
   ]);
   const pendingCount = materials.filter((m) => m.status === 'pending').length + pettycash.filter((p) => p.status === 'pending').length;
   const monday = mondayOf(todayISO());
@@ -145,14 +151,137 @@ async function paintOverview(el, project) {
       </div>
       ${project.notes ? `<div class="sub-h" style="margin-top:14px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-dim); font-weight:700;">Notes</div><div>${esc(project.notes)}</div>` : ''}
     </div>
+    ${accomplishmentSectionHTML(project, progressUpdates)}
     ${approver ? assignedTeamSectionHTML(assignments) : ''}
   `;
+
+  wireAccomplishmentSection(el, project, progressUpdates);
 
   if (approver) {
     document.getElementById('pd-assign-team').addEventListener('click', () =>
       openAssignTeamModal(project, assignments, () => paintOverview(el, project))
     );
   }
+}
+
+/* ==================== ACCOMPLISHMENT (planned vs actual S-curve) ==================== */
+const SCHED_LABEL = {
+  ahead: 'Ahead of schedule',
+  on_track: 'On schedule',
+  behind: 'Behind schedule',
+  no_data: 'No accomplishment logged yet',
+  no_plan: 'Set start & target dates first',
+};
+const SCHED_CLASS = {
+  ahead: 'sched-ahead',
+  on_track: 'sched-on_track',
+  behind: 'sched-behind',
+  no_data: 'sched-no_data',
+  no_plan: 'sched-no_plan',
+};
+
+function scheduleBadgeHTML(sched) {
+  const cls = SCHED_CLASS[sched.status] || 'sched-no_data';
+  let label = SCHED_LABEL[sched.status] || sched.status;
+  if ((sched.status === 'ahead' || sched.status === 'behind') && sched.diff !== null) {
+    label += ` — ${Math.abs(Math.round(sched.diff))}%`;
+  }
+  return `<span class="pill ${cls}">${esc(label)}</span>`;
+}
+
+function accomplishmentSectionHTML(project, updates) {
+  const sched = scheduleStatus(project, updates);
+  const chart = buildProgressChart(project, updates);
+  const sorted = [...updates].sort((a, b) => (a.update_date < b.update_date ? 1 : -1));
+  return `
+    <div class="section-head">
+      <h2>Accomplishment &mdash; Planned vs Actual</h2>
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        ${scheduleBadgeHTML(sched)}
+        <button class="btn primary sm" id="pd-log-progress">${ICONS.plus}Log accomplishment</button>
+      </div>
+    </div>
+    ${chart.html}
+    ${
+      sorted.length
+        ? `<div class="table-wrap card" style="margin-top:12px;"><table><thead><tr><th>Date</th><th>% complete</th><th>Note</th><th>Logged by</th><th></th></tr></thead><tbody>
+            ${sorted
+              .map(
+                (u) => `<tr>
+                  <td>${fmtDate(u.update_date)}</td>
+                  <td class="num"><b>${Math.round(Number(u.percent_complete))}%</b></td>
+                  <td>${esc(u.note || '')}</td>
+                  <td>${esc(memberName(u.logged_by))}</td>
+                  <td><button class="btn sm bad" data-del-progress="${u.id}">Delete</button></td>
+                </tr>`
+              )
+              .join('')}
+          </tbody></table></div>`
+        : ''
+    }
+  `;
+}
+
+function wireAccomplishmentSection(el, project, updates) {
+  const chart = buildProgressChart(project, updates);
+  chart.wire(el);
+
+  const btn = document.getElementById('pd-log-progress');
+  if (btn) btn.addEventListener('click', () => openLogProgressModal(project, updates, () => paintOverview(el, project)));
+
+  el.querySelectorAll('[data-del-progress]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      if (!confirm('Delete this accomplishment entry?')) return;
+      try {
+        await deleteProgressUpdate(b.dataset.delProgress);
+        toast('Entry deleted.', 'ok');
+        await paintOverview(el, project);
+      } catch (err) {
+        toast(err.message || 'Could not delete entry.', 'error');
+      }
+    });
+  });
+}
+
+function openLogProgressModal(project, updates, onSaved) {
+  const latest = [...updates].sort((a, b) => (a.update_date < b.update_date ? 1 : -1))[0];
+  openModal(`
+    <div class="modal-overlay" id="modal-progress">
+      <div class="modal">
+        <div class="modal-head"><h2>Log accomplishment</h2><button class="btn ghost" data-close-modal>${ICONS.close}</button></div>
+        <form id="form-progress">
+          <div class="modal-body">
+            <div class="hint" style="margin-bottom:10px;">Enter the actual % complete as computed on site as of the date below.</div>
+            <div class="field-row c2">
+              <div class="field"><label for="pg-date">Date</label><input type="date" id="pg-date" required value="${todayISO()}"></div>
+              <div class="field"><label for="pg-pct">% complete</label><input type="number" id="pg-pct" min="0" max="100" step="0.1" required value="${latest ? latest.percent_complete : ''}"></div>
+            </div>
+            <div class="field"><label for="pg-note">Note (optional)</label><textarea id="pg-note" maxlength="300" placeholder="e.g. Foundation and columns done, roofing next"></textarea></div>
+          </div>
+          <div class="modal-foot"><button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn primary">Save</button></div>
+        </form>
+      </div>
+    </div>
+  `);
+  document.getElementById('form-progress').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pct = Number(document.getElementById('pg-pct').value);
+    if (pct < 0 || pct > 100) return toast('% complete must be between 0 and 100.', 'error');
+    try {
+      await createProgressUpdate({
+        project_id: project.id,
+        update_date: document.getElementById('pg-date').value,
+        percent_complete: pct,
+        note: document.getElementById('pg-note').value.trim() || null,
+        logged_by: currentUserId(),
+      });
+      toast('Accomplishment logged.', 'ok');
+      closeModal();
+      await onSaved();
+    } catch (err) {
+      toast(err.message || 'Could not log accomplishment.', 'error');
+    }
+  });
 }
 
 function assignedTeamSectionHTML(assignments) {
