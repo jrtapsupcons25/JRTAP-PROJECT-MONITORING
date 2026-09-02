@@ -116,10 +116,33 @@ function memberName(id) {
   return state.teamMembers.find((m) => m.id === id)?.full_name || '—';
 }
 
+/* ==================== PETTY CASH (received vs expenses) ==================== */
+// "Received" = approved petty cash requests actually released to the project.
+// "Expenses" = site expenses logged against the project (the Expenses tab).
+// Remaining = received - expenses; can go negative if the site overspent
+// what was released, which is flagged in red so it's easy to spot.
+function pettyCashTotals(pettycash, expenses) {
+  const received = pettycash.filter((p) => p.status === 'approved').reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const spent = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  return { received, spent, remaining: received - spent };
+}
+
+function pettyCashSummaryHTML(totals) {
+  const remClass = totals.remaining < 0 ? 'bad' : 'good';
+  return `
+    <div class="section-head"><h2>Petty Cash &mdash; Received vs Expenses</h2></div>
+    <div class="stat-grid cols-3 section">
+      <div class="stat good"><div class="v num">${fmtMoney(totals.received)}</div><div class="l">Petty cash received</div></div>
+      <div class="stat"><div class="v num">${fmtMoney(totals.spent)}</div><div class="l">Expenses logged</div></div>
+      <div class="stat ${remClass}"><div class="v num">${fmtMoney(Math.abs(totals.remaining))}</div><div class="l">${totals.remaining < 0 ? 'Overspent by' : 'Remaining petty cash'}</div></div>
+    </div>
+  `;
+}
+
 /* ==================== OVERVIEW ==================== */
 async function paintOverview(el, project) {
   const approver = isApprover();
-  const [materials, pettycash, workers, attendance, advances, assignments, progressUpdates] = await Promise.all([
+  const [materials, pettycash, workers, attendance, advances, assignments, progressUpdates, expenses] = await Promise.all([
     fetchMaterialRequests({ projectId: project.id }),
     fetchPettyCashRequests({ projectId: project.id }),
     fetchWorkers(project.id),
@@ -127,10 +150,12 @@ async function paintOverview(el, project) {
     fetchAdvances(project.id),
     approver ? fetchProjectAssignments(project.id) : Promise.resolve([]),
     fetchProgressUpdates(project.id),
+    fetchDirectExpenses(project.id),
   ]);
   const pendingCount = materials.filter((m) => m.status === 'pending').length + pettycash.filter((p) => p.status === 'pending').length;
   const monday = mondayOf(todayISO());
   const { totals } = weeklyPayrollForWorkers(workers.filter((w) => w.active !== false), attendance, advances, monday);
+  const pcTotals = pettyCashTotals(pettycash, expenses);
 
   el.innerHTML = `
     <div class="stat-grid section">
@@ -151,6 +176,7 @@ async function paintOverview(el, project) {
       </div>
       ${project.notes ? `<div class="sub-h" style="margin-top:14px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-dim); font-weight:700;">Notes</div><div>${esc(project.notes)}</div>` : ''}
     </div>
+    ${pettyCashSummaryHTML(pcTotals)}
     ${accomplishmentSectionHTML(project, progressUpdates)}
     ${approver ? assignedTeamSectionHTML(assignments) : ''}
   `;
@@ -501,9 +527,10 @@ async function paintExpenses(el, project) {
 async function paintExpensesList(project) {
   const listEl = document.getElementById('pd-expenses-list');
   if (!listEl) return;
-  const rows = await fetchDirectExpenses(project.id);
-  const total = rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const [rows, pettycash] = await Promise.all([fetchDirectExpenses(project.id), fetchPettyCashRequests({ projectId: project.id })]);
+  const pcTotals = pettyCashTotals(pettycash, rows);
   listEl.innerHTML =
+    pettyCashSummaryHTML(pcTotals) +
     (rows.length === 0
       ? `<div class="card empty">${ICONS.empty}<div class="lead">No expenses logged yet</div></div>`
       : `<div class="table-wrap card"><table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th>Logged by</th></tr></thead><tbody>
@@ -518,8 +545,7 @@ async function paintExpensesList(project) {
               </tr>`
             )
             .join('')}
-        </tbody></table></div>`) +
-    `<div class="card card-pad" style="margin-top:12px; display:flex; justify-content:space-between;"><b>Total</b><b class="num">${fmtMoney(total)}</b></div>`;
+        </tbody></table></div>`);
 }
 
 function openDirectExpenseModal(project, onSaved) {

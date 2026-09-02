@@ -217,6 +217,9 @@ textarea{ resize:vertical; min-height:64px; }
 .stat .v{ font-family:'IBM Plex Mono'; font-size:26px; font-weight:600; font-variant-numeric:tabular-nums; }
 .stat .l{ font-family:'Big Shoulders Stencil Text','Oswald',sans-serif; font-weight:700; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-dim); margin-top:3px; }
 .stat.accent .v{ color:var(--accent); }
+.stat.good .v{ color:var(--good); }
+.stat.bad .v{ color:var(--bad); }
+.stat-grid.cols-3{ grid-template-columns:repeat(3,1fr); }
 
 .pill{
   display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:99px;
@@ -365,6 +368,7 @@ details.logcard[open] summary .chev{ transform:rotate(90deg); }
   #content{ padding:18px 16px 60px; }
   #topbar{ padding:14px 16px; }
   .stat-grid{ grid-template-columns:repeat(2,1fr); }
+  .stat-grid.cols-3{ grid-template-columns:1fr; }
   .field-row.c2, .field-row.c3{ grid-template-columns:1fr; }
   .rep-row{ grid-template-columns:1fr; }
 }
