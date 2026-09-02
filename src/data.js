@@ -24,6 +24,19 @@ export async function fetchTeamMembers() {
   return must(await db.from('team_members').select('*').order('full_name', { ascending: true }), 'fetchTeamMembers');
 }
 
+/* ---------------- manpower (company-wide registry, Owner/Admin managed) ---------------- */
+export async function fetchManpower(filter = {}) {
+  let q = db.from('manpower').select('*').order('full_name', { ascending: true });
+  if (filter.activeOnly) q = q.eq('active', true);
+  return must(await q, 'fetchManpower');
+}
+export async function createManpower(fields) {
+  return must(await db.from('manpower').insert(fields).select().single(), 'createManpower');
+}
+export async function updateManpower(id, patch) {
+  return must(await db.from('manpower').update(patch).eq('id', id).select().single(), 'updateManpower');
+}
+
 /* ---------------- material requests ---------------- */
 export async function fetchMaterialRequests(filter = {}) {
   let q = db.from('material_requests').select('*').order('created_at', { ascending: false });

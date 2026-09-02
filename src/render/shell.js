@@ -10,6 +10,7 @@ export const NAV = [
   { id: 'materials', label: 'Material Requests', icon: 'materials' },
   { id: 'pettycash', label: 'Petty Cash', icon: 'cash' },
   { id: 'logs', label: 'Daily Logs', icon: 'logs' },
+  { id: 'manpower', label: 'Manpower', icon: 'team', approverOnly: true },
   { id: 'team', label: 'Team', icon: 'team', approverOnly: true },
 ];
 

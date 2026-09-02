@@ -14,6 +14,7 @@ import { renderMaterials } from './render/materials.js';
 import { renderPettyCash } from './render/pettycash.js';
 import { renderLogs } from './render/logs.js';
 import { renderTeam } from './render/team.js';
+import { renderManpower } from './render/manpower.js';
 import { isApprover } from './state.js';
 
 document.getElementById('app').innerHTML = `
@@ -86,6 +87,12 @@ async function renderRoute(route) {
         return;
       }
       await renderTeam();
+    } else if (route.name === 'manpower') {
+      if (!approver) {
+        window.location.hash = 'dashboard';
+        return;
+      }
+      await renderManpower();
     } else await renderDashboard();
   } catch (err) {
     console.error('Route render failed', err);
@@ -115,6 +122,7 @@ function setupRealtime() {
     'direct_materials',
     'direct_expenses',
     'progress_updates',
+    'manpower',
   ];
   let channel = supabase.channel('siteops-live');
   tables.forEach((table) => {

@@ -38,6 +38,7 @@ import {
   fetchProgressUpdates,
   createProgressUpdate,
   deleteProgressUpdate,
+  fetchManpower,
 } from '../data.js';
 import { weeklyPayrollForWorkers } from '../payroll.js';
 import { scheduleStatus } from '../progress.js';
@@ -628,7 +629,7 @@ async function paintManpower(el, project) {
     if (!listEl) return;
     listEl.innerHTML = workers.length === 0
       ? `<div class="card empty">${ICONS.team}<div class="lead">No workers registered</div>Add workers to start tracking attendance and payroll.</div>`
-      : `<div class="table-wrap card"><table><thead><tr><th>Name</th><th>Trade</th><th>Daily rate</th><th>Status</th><th></th></tr></thead><tbody>
+      : `<div class="table-wrap card"><table><thead><tr><th>Name</th><th>Position</th><th>Daily rate</th><th>Status</th><th></th></tr></thead><tbody>
           ${workers
             .map(
               (w) => `<tr>
@@ -760,32 +761,67 @@ async function paintManpower(el, project) {
   });
 }
 
-function openWorkerModal(project, worker, onSaved) {
+async function openWorkerModal(project, worker, onSaved) {
   const isEdit = !!worker;
+  // Adding a worker pulls from the company-wide manpower registry (name,
+  // position, rate auto-filled) instead of retyping their details per project.
+  // Editing an existing project roster row keeps the direct fields, since that's
+  // adjusting this person's status/rate on *this* project, not the registry.
+  const manpower = isEdit ? [] : await fetchManpower({ activeOnly: true });
+
   openModal(`
     <div class="modal-overlay" id="modal-worker">
       <div class="modal">
         <div class="modal-head"><h2>${isEdit ? 'Edit worker' : 'Add worker'}</h2><button class="btn ghost" data-close-modal>${ICONS.close}</button></div>
         <form id="form-worker">
           <div class="modal-body">
-            <div class="field"><label for="w-name">Name</label><input type="text" id="w-name" required maxlength="80" value="${esc(worker?.full_name || '')}" placeholder="e.g. Ramon Buenaventura"></div>
-            <div class="field"><label for="w-trade">Trade</label><input type="text" id="w-trade" maxlength="60" value="${esc(worker?.trade || '')}" placeholder="e.g. Mason, Carpenter, Laborer"></div>
+            ${
+              isEdit
+                ? `<div class="field"><label for="w-name">Name</label><input type="text" id="w-name" required maxlength="80" value="${esc(worker.full_name || '')}"></div>`
+                : manpower.length === 0
+                  ? `<div class="hint">No manpower registered yet. Ask the Owner/Admin to register workers on the "Manpower" page first, then pick them here.</div>`
+                  : `<div class="field"><label for="w-manpower">Select worker</label>
+                      <select id="w-manpower" required>
+                        <option value="">Select from registered manpower&hellip;</option>
+                        ${manpower.map((m) => `<option value="${m.id}" data-position="${esc(m.job_position || '')}" data-rate="${m.daily_rate ?? ''}">${esc(m.full_name)}${m.job_position ? ` &mdash; ${esc(m.job_position)}` : ''}</option>`).join('')}
+                      </select>
+                    </div>`
+            }
+            <div class="field"><label for="w-trade">Position</label><input type="text" id="w-trade" maxlength="60" value="${esc(worker?.trade || '')}" placeholder="e.g. Mason, Carpenter, Laborer" ${isEdit ? '' : 'readonly'}></div>
             <div class="field"><label for="w-rate">Daily rate (&#8369;)</label><input type="number" id="w-rate" min="0" step="1" required value="${worker?.daily_rate ?? ''}"></div>
             ${isEdit ? `<div class="field"><label for="w-active">Status</label><select id="w-active"><option value="true" ${worker.active !== false ? 'selected' : ''}>Active</option><option value="false" ${worker.active === false ? 'selected' : ''}>Inactive</option></select></div>` : ''}
           </div>
-          <div class="modal-foot"><button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn primary">${isEdit ? 'Save changes' : 'Add worker'}</button></div>
+          <div class="modal-foot"><button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn primary" ${!isEdit && manpower.length === 0 ? 'disabled' : ''}>${isEdit ? 'Save changes' : 'Add worker'}</button></div>
         </form>
       </div>
     </div>
   `);
+
+  const manpowerSelect = document.getElementById('w-manpower');
+  if (manpowerSelect) {
+    manpowerSelect.addEventListener('change', () => {
+      const opt = manpowerSelect.selectedOptions[0];
+      document.getElementById('w-trade').value = opt?.dataset.position || '';
+      document.getElementById('w-rate').value = opt?.dataset.rate || '';
+    });
+  }
+
   document.getElementById('form-worker').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fields = {
-      full_name: document.getElementById('w-name').value.trim(),
       trade: document.getElementById('w-trade').value.trim() || null,
       daily_rate: Number(document.getElementById('w-rate').value),
     };
-    if (isEdit) fields.active = document.getElementById('w-active').value === 'true';
+    if (isEdit) {
+      fields.full_name = document.getElementById('w-name').value.trim();
+      fields.active = document.getElementById('w-active').value === 'true';
+    } else {
+      const manpowerId = manpowerSelect.value;
+      const picked = manpower.find((m) => String(m.id) === manpowerId);
+      if (!picked) return toast('Select a worker from the list.', 'error');
+      fields.full_name = picked.full_name;
+      fields.manpower_id = picked.id;
+    }
     try {
       if (isEdit) await updateWorker(worker.id, fields);
       else await createWorker({ ...fields, project_id: project.id });
