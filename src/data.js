@@ -3,6 +3,16 @@ import { db, supabase } from './supabase.js';
 function must(result, what) {
   if (result.error) {
     console.error(what, result.error);
+    // PGRST116 ("Cannot coerce the result to a single JSON object") from a
+    // .single() write almost always means an RLS policy silently blocked
+    // the row (0 rows matched) rather than a real data problem -- most
+    // often because this tab's session no longer matches the account the
+    // UI thinks is signed in (see the cross-tab guard in main.js). Surface
+    // a message that actually points at the fix instead of the raw
+    // PostgREST wording.
+    if (result.error.code === 'PGRST116') {
+      throw new Error('Your session may be out of date. Please refresh the page and try again.');
+    }
     throw new Error(result.error.message || `Failed: ${what}`);
   }
   return result.data;

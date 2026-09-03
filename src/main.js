@@ -34,9 +34,29 @@ async function boot() {
     await mountAuthScreen(onSignedIn);
   }
 
-  supabase.auth.onAuthStateChange((event) => {
+  supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT') {
       window.location.hash = '';
+      window.location.reload();
+      return;
+    }
+    // Cross-tab session bleed guard. Supabase's auth client persists the
+    // session to localStorage and syncs it across every open tab on this
+    // origin -- so if a DIFFERENT account signs in on another tab (common
+    // here: Owner/Admin/Site accounts all tested from the same browser),
+    // this tab's in-memory state.session/profile silently go stale while
+    // its outgoing requests start carrying the OTHER account's token. The
+    // UI still shows the original signed-in user (e.g. "Owner"), but a
+    // write like approving a request then gets authenticated as whoever
+    // most recently signed in elsewhere, fails the RLS check, and the
+    // Supabase client surfaces a confusing "Cannot coerce the result to a
+    // single JSON object" instead of a clear auth error. Reload whenever
+    // the session's user actually changes so this tab's UI and permissions
+    // always match the token it's about to use -- but only once the app is
+    // already up and running, so the very first sign-in doesn't reload.
+    if (!routerStarted) return;
+    const newUserId = session?.user?.id || null;
+    if (newUserId && newUserId !== state.session?.user?.id) {
       window.location.reload();
     }
   });
