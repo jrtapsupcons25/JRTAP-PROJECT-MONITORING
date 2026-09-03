@@ -372,3 +372,27 @@ details.logcard[open] summary .chev{ transform:rotate(90deg); }
   .field-row.c2, .field-row.c3{ grid-template-columns:1fr; }
   .rep-row{ grid-template-columns:1fr; }
 }
+
+/* Printable payroll sheet — a hidden document injected at the body level
+   (outside the app's normal layout) so it can be shown in isolation via
+   @media print, regardless of whatever page/theme is on screen when the
+   office prints an approved payroll for filing. */
+#print-payroll-sheet{ display:none; }
+@media print{
+  #app{ display:none !important; }
+  #print-payroll-sheet{
+    display:block !important; position:static; padding:0; margin:0;
+    background:#fff; color:#000; font-family:'IBM Plex Sans', Arial, sans-serif;
+  }
+  .print-header{ display:flex; align-items:center; gap:14px; margin-bottom:18px; border-bottom:2px solid #000; padding-bottom:12px; }
+  .print-header img{ width:48px; height:48px; }
+  .print-header h1{ font-size:15px; margin:0 0 2px; }
+  .print-sub{ font-size:11.5px; }
+  .print-table{ width:100%; border-collapse:collapse; font-size:11px; margin-bottom:18px; }
+  .print-table th, .print-table td{ border:1px solid #000; padding:5px 7px; text-align:left; }
+  .print-table th.num, .print-table td.num{ text-align:right; }
+  .print-total td{ font-weight:700; border-top:2px solid #000; }
+  .print-meta{ font-size:11px; margin-bottom:34px; display:flex; flex-direction:column; gap:3px; }
+  .print-signatures{ display:flex; justify-content:space-between; gap:24px; margin-top:30px; }
+  .print-signatures .sig{ flex:1; border-top:1px solid #000; padding-top:6px; font-size:11px; text-align:center; }
+}

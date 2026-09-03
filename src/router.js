@@ -5,7 +5,9 @@ function parseHash() {
   if (!hash) hash = 'dashboard';
   const [head, ...rest] = hash.split('/');
   if (head === 'project' && rest[0]) {
-    return { name: 'project', params: { id: rest[0], tab: rest[1] || 'overview' } };
+    const params = { id: rest[0], tab: rest[1] || 'overview' };
+    if (rest[2] === 'week' && rest[3]) params.week = rest[3];
+    return { name: 'project', params };
   }
   return { name: head, params: {} };
 }
@@ -31,6 +33,8 @@ export function navigate(hash) {
   }
 }
 
-export function projectHash(id, tab) {
-  return `project/${id}` + (tab ? `/${tab}` : '');
+export function projectHash(id, tab, week) {
+  let hash = `project/${id}` + (tab ? `/${tab}` : '');
+  if (week) hash += `/week/${week}`;
+  return hash;
 }

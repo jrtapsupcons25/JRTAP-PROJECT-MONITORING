@@ -36,6 +36,49 @@ export async function createManpower(fields) {
 export async function updateManpower(id, patch) {
   return must(await db.from('manpower').update(patch).eq('id', id).select().single(), 'updateManpower');
 }
+// Centralized cross-project bale totals, one row per manpower person
+// ({ manpower_id, outstanding }). Backed by a SECURITY DEFINER RPC so a Site
+// account gets an accurate figure without exposing other projects' raw
+// advance rows to it.
+export async function fetchManpowerBaleTotals() {
+  return must(await db.rpc('manpower_bale_totals'), 'fetchManpowerBaleTotals');
+}
+// Ledger of individual settle actions (one row per confirmation), so the
+// weekly payroll table can show what's already been confirmed for the week
+// being viewed without re-deriving it from a running cumulative total.
+export async function fetchBaleSettlements(manpowerIds) {
+  let q = db.from('bale_settlements').select('*').order('settled_at', { ascending: false });
+  if (manpowerIds && manpowerIds.length) q = q.in('manpower_id', manpowerIds);
+  return must(await q, 'fetchBaleSettlements');
+}
+export async function createBaleSettlement(fields) {
+  return must(await db.from('bale_settlements').insert(fields).select().single(), 'createBaleSettlement');
+}
+
+/* ---------------- payroll runs (submit -> approve -> print workflow) ---------------- */
+export async function fetchPayrollRun(projectId, weekStart) {
+  return must(
+    await db.from('payroll_runs').select('*').eq('project_id', projectId).eq('week_start', weekStart).maybeSingle(),
+    'fetchPayrollRun'
+  );
+}
+export async function createPayrollRun(fields) {
+  return must(await db.from('payroll_runs').insert(fields).select().single(), 'createPayrollRun');
+}
+export async function updatePayrollRun(id, patch) {
+  return must(await db.from('payroll_runs').update(patch).eq('id', id).select().single(), 'updatePayrollRun');
+}
+export async function deletePayrollRun(id) {
+  return must(await db.from('payroll_runs').delete().eq('id', id), 'deletePayrollRun');
+}
+// All payroll runs awaiting approval, across every project this account can
+// see — feeds the Owner/Admin dashboard's "Needs your approval" queue.
+export async function fetchPendingPayrollRuns() {
+  return must(
+    await db.from('payroll_runs').select('*').eq('status', 'submitted').order('created_at', { ascending: true }),
+    'fetchPendingPayrollRuns'
+  );
+}
 
 /* ---------------- material requests ---------------- */
 export async function fetchMaterialRequests(filter = {}) {
@@ -117,6 +160,9 @@ export async function fetchAdvances(projectId) {
 }
 export async function createAdvance(fields) {
   return must(await db.from('advances').insert(fields).select().single(), 'createAdvance');
+}
+export async function updateAdvance(id, patch) {
+  return must(await db.from('advances').update(patch).eq('id', id).select().single(), 'updateAdvance');
 }
 
 /* ---------------- direct materials ---------------- */

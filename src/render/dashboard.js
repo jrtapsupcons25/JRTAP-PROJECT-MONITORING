@@ -9,12 +9,16 @@ import {
   fetchWorkers,
   fetchAttendance,
   fetchAdvances,
+  fetchManpower,
+  fetchManpowerBaleTotals,
+  fetchPendingPayrollRuns,
 } from '../data.js';
-import { companyWidePayroll } from '../payroll.js';
+import { companyWidePayroll, centralizedBaleRows } from '../payroll.js';
 import { navigate, projectHash } from '../router.js';
 import { openMaterialModal } from './materials.js';
 import { openPettyCashModal } from './pettycash.js';
 import { openLogModal } from './logs.js';
+import { openManpowerBaleModal } from './bale.js';
 
 const STATUS_LABEL = { planning: 'Planning', active: 'Active', on_hold: 'On hold', completed: 'Completed' };
 
@@ -42,14 +46,26 @@ export async function renderDashboard() {
   const projectName = (id) => projects.find((p) => p.id === id)?.name || `#${id}`;
   const activeCount = projects.filter((p) => p.status === 'active').length;
 
+  // Workers + advances are fetched for everyone (RLS already scopes a Site
+  // account to its assigned projects) so the "remaining bale" list below can
+  // show for both Owner/Admin and Site. Attendance/payroll math stays
+  // Owner/Admin-only, same as before. Bale itself is centralized per person
+  // (manpower_bale_totals RPC + the manpower registry), so it reflects a
+  // person's latest balance across every project they've worked, not just
+  // this one — workers/advances are still needed for the legacy fallback.
+  const [workers, advances, manpowerList, manpowerTotals] = await Promise.all([
+    fetchWorkers(),
+    fetchAdvances(),
+    fetchManpower(),
+    fetchManpowerBaleTotals(),
+  ]);
+
   let payrollBlock = '';
   let statThird = '';
+  let pendingPayrollRuns = [];
   if (approver) {
-    const [workers, attendance, advances] = await Promise.all([
-      fetchWorkers(),
-      fetchAttendance(),
-      fetchAdvances(),
-    ]);
+    pendingPayrollRuns = await fetchPendingPayrollRuns();
+    const attendance = await fetchAttendance();
     const monday = mondayOf(todayISO());
     const { byProject, grand } = companyWidePayroll(projects, workers, attendance, advances, monday);
     statThird = `<div class="stat accent"><div class="v num">${fmtMoney(grand.net)}</div><div class="l">This week's payroll</div></div>`;
@@ -78,9 +94,41 @@ export async function renderDashboard() {
       </div>`;
   }
 
+  // One row per manpower PERSON (centralized), regardless of which project
+  // they're currently deployed on; a handful of legacy rows (advances logged
+  // before the manpower registry existed) fall back to a per-project link.
+  const baleRows = centralizedBaleRows(manpowerTotals, manpowerList, workers, advances);
+  const baleBlock = `
+    <div class="section">
+      <div class="section-head"><h2>Manpower with remaining bale</h2></div>
+      ${
+        baleRows.length === 0
+          ? emptyBlock('No manpower currently has an outstanding bale.')
+          : `<div class="table-wrap card"><table><thead><tr><th>Name</th><th>Position</th><th>Remaining</th><th></th></tr></thead><tbody>
+              ${baleRows
+                .map((r, i) =>
+                  r.manpowerId != null
+                    ? `<tr>
+                        <td>${esc(r.name)}</td>
+                        <td>${esc(r.position)}</td>
+                        <td class="num"><b>${fmtMoney(r.remaining)}</b></td>
+                        <td><button class="btn sm" data-settle-manpower-row="${i}">Settle</button></td>
+                      </tr>`
+                    : `<tr>
+                        <td>${esc(r.name)}</td>
+                        <td>${esc(r.position)}</td>
+                        <td class="num"><b>${fmtMoney(r.remaining)}</b></td>
+                        <td><a class="btn sm" href="#${projectHash(r.projectId, 'manpower')}">Settle &rarr;</a></td>
+                      </tr>`
+                )
+                .join('')}
+            </tbody></table></div>`
+      }
+    </div>`;
+
   const pendingMaterials = materials.filter((m) => m.status === 'pending');
   const pendingPettycash = pettycash.filter((p) => p.status === 'pending');
-  const pendingCount = pendingMaterials.length + pendingPettycash.length;
+  const pendingCount = pendingMaterials.length + pendingPettycash.length + pendingPayrollRuns.length;
 
   const myMaterials = materials.filter((m) => m.requested_by === uid);
   const myPettycash = pettycash.filter((p) => p.requested_by === uid);
@@ -116,6 +164,14 @@ export async function renderDashboard() {
                     (p) => `<tr class="clickable-row" data-open-pettycash="${p.id}" style="cursor:pointer;">
                       <td>Petty cash</td><td>${esc(projectName(p.project_id))}</td><td>${memberName(p.requested_by)}</td>
                       <td>${esc(p.purpose)} &mdash; ${fmtMoney(p.amount)}</td><td>${fmtDate(p.created_at)}</td>
+                    </tr>`
+                  )
+                  .join('')}
+                ${pendingPayrollRuns
+                  .map(
+                    (r) => `<tr class="clickable-row" data-open-payroll="${projectHash(r.project_id, 'manpower', r.week_start)}" style="cursor:pointer;">
+                      <td>Payroll</td><td>${esc(projectName(r.project_id))}</td><td>${memberName(r.submitted_by)}</td>
+                      <td>Week of ${fmtDate(r.week_start)}</td><td>${fmtDate(r.created_at)}</td>
                     </tr>`
                   )
                   .join('')}
@@ -165,7 +221,7 @@ export async function renderDashboard() {
       </div>`;
   }
 
-  content.innerHTML = statGrid + queueBlock + payrollBlock;
+  content.innerHTML = statGrid + queueBlock + payrollBlock + baleBlock;
 
   function memberName(id) {
     return esc(state.teamMembers.find((t) => t.id === id)?.full_name || '—');
@@ -176,6 +232,16 @@ export async function renderDashboard() {
   });
   content.querySelectorAll('[data-open-pettycash]').forEach((row) => {
     row.addEventListener('click', () => navigate('pettycash'));
+  });
+  content.querySelectorAll('[data-open-payroll]').forEach((row) => {
+    row.addEventListener('click', () => navigate(row.dataset.openPayroll));
+  });
+  content.querySelectorAll('[data-settle-manpower-row]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const row = baleRows[Number(btn.dataset.settleManpowerRow)];
+      if (!row || row.manpowerId == null) return;
+      openManpowerBaleModal(row.manpowerId, row.name, () => renderDashboard());
+    });
   });
 
   document.getElementById('qa-log').addEventListener('click', () => openLogModal(undefined, renderDashboard));

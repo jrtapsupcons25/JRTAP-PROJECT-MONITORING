@@ -3,6 +3,7 @@ import { setPageTitle, setTopbarActions } from './shell.js';
 import {
   esc,
   fmtDate,
+  fmtDateTime,
   fmtMoney,
   pillClass,
   toast,
@@ -26,6 +27,7 @@ import {
   upsertAttendance,
   fetchAdvances,
   createAdvance,
+  updateAdvance,
   fetchDirectMaterials,
   createDirectMaterial,
   fetchDirectExpenses,
@@ -39,13 +41,21 @@ import {
   createProgressUpdate,
   deleteProgressUpdate,
   fetchManpower,
+  fetchManpowerBaleTotals,
+  fetchBaleSettlements,
+  fetchPayrollRun,
+  createPayrollRun,
+  updatePayrollRun,
+  deletePayrollRun,
 } from '../data.js';
-import { weeklyPayrollForWorkers } from '../payroll.js';
+import { weeklyPayrollForWorkers, remainingBale, settledThisWeek } from '../payroll.js';
 import { scheduleStatus } from '../progress.js';
 import { buildProgressChart } from './progressChart.js';
 import { navigate, projectHash } from '../router.js';
 import { openProjectModal } from './projects.js';
 import { openLogModal } from './logs.js';
+import { openSettleAdvanceModal, settleManpowerBaleAmount } from './bale.js';
+import { printPayrollRun } from './payrollPrint.js';
 import { ICONS } from '../icons.js';
 
 const STATUS_LABEL = { planning: 'Planning', active: 'Active', on_hold: 'On hold', completed: 'Completed' };
@@ -62,7 +72,7 @@ const TABS = [
 let attendanceDate = todayISO();
 let payrollMonday = mondayOf(todayISO());
 
-export async function renderProjectDetail({ id, tab }) {
+export async function renderProjectDetail({ id, tab, week }) {
   const content = document.getElementById('content');
   content.innerHTML = `<div class="loading-row">Loading project…</div>`;
 
@@ -110,7 +120,7 @@ export async function renderProjectDetail({ id, tab }) {
   else if (activeTab === 'activities') await paintActivities(tabContent, project);
   else if (activeTab === 'materials') await paintMaterials(tabContent, project);
   else if (activeTab === 'expenses') await paintExpenses(tabContent, project);
-  else if (activeTab === 'manpower') await paintManpower(tabContent, project);
+  else if (activeTab === 'manpower') await paintManpower(tabContent, project, week);
 }
 
 function memberName(id) {
@@ -588,7 +598,11 @@ function openDirectExpenseModal(project, onSaved) {
 }
 
 /* ==================== MANPOWER & PAYROLL ==================== */
-async function paintManpower(el, project) {
+async function paintManpower(el, project, initialWeek) {
+  // A dashboard "Payroll" approval-queue link passes the specific week that
+  // submission is for, so the reviewer lands directly on it instead of
+  // whatever week happened to be selected last.
+  if (initialWeek) payrollMonday = mondayOf(initialWeek);
   el.innerHTML = `
     <div class="section">
       <div class="section-head"><h2>Worker roster</h2><button class="btn sm" id="pd-add-worker">${ICONS.plus}Add worker</button></div>
@@ -674,30 +688,261 @@ async function paintManpower(el, project) {
   async function refreshPayroll() {
     const tableEl = document.getElementById('pd-payroll-table');
     if (!tableEl) return;
+
+    // A submitted-or-approved payroll for this project/week takes over the
+    // whole card — the site engineer's live editable view only shows while
+    // no such record exists yet ("draft").
+    const existingRun = await fetchPayrollRun(project.id, payrollMonday);
+    if (existingRun) {
+      renderPayrollRunView(tableEl, existingRun);
+      return;
+    }
+
     const activeWorkers = workers.filter((w) => w.active !== false);
-    const [attendance, advances] = await Promise.all([fetchAttendance(project.id), fetchAdvances(project.id)]);
+    const manpowerIds = activeWorkers.map((w) => w.manpower_id).filter((id) => id != null);
+    const [attendance, advances, manpowerTotals, settlements] = await Promise.all([
+      fetchAttendance(project.id),
+      fetchAdvances(project.id),
+      fetchManpowerBaleTotals(),
+      manpowerIds.length ? fetchBaleSettlements(manpowerIds) : Promise.resolve([]),
+    ]);
     const { rows, totals } = weeklyPayrollForWorkers(activeWorkers, attendance, advances, payrollMonday);
+    // Outstanding bale is centralized per manpower person, not per project —
+    // a worker only carries a figure here if they're linked to the manpower
+    // registry (manpower_id); legacy roster rows show "—" and stay covered by
+    // the Cash advances list above.
+    const outstandingFor = (worker) => {
+      if (worker.manpower_id == null) return null;
+      const t = manpowerTotals.find((m) => m.manpower_id === worker.manpower_id);
+      return t ? Number(t.outstanding) || 0 : 0;
+    };
     tableEl.innerHTML = `
       <div class="hint" style="margin-bottom:8px;">${weekRangeLabel(payrollMonday)}</div>
       ${
         rows.length === 0
           ? `<div class="hint">No active workers to compute payroll for.</div>`
-          : `<div class="table-wrap"><table><thead><tr><th>Worker</th><th>Days present</th><th>Gross</th><th>Advances</th><th>Net</th></tr></thead><tbody>
+          : `<div class="table-wrap"><table><thead><tr><th>Worker</th><th>Days present</th><th>Gross</th><th>Advances (this wk)</th><th>Net</th><th>Outstanding bale (company-wide)</th><th>Deduct bale</th><th>Remaining bale this week</th></tr></thead><tbody>
               ${rows
-                .map(
-                  (r) => `<tr>
+                .map((r) => {
+                  const outstanding = outstandingFor(r.worker);
+                  const confirmed = r.worker.manpower_id != null ? settledThisWeek(r.worker.manpower_id, settlements, payrollMonday) : 0;
+                  return `<tr data-worker-row="${r.worker.id}">
                     <td>${esc(r.worker.full_name)}</td>
                     <td class="num">${r.daysPresent}</td>
-                    <td class="num">${fmtMoney(r.gross)}</td>
+                    <td class="num" data-cell-gross>${fmtMoney(r.gross)}</td>
                     <td class="num">${fmtMoney(r.advancesTotal)}</td>
-                    <td class="num"><b>${fmtMoney(r.net)}</b></td>
-                  </tr>`
-                )
+                    <td class="num" data-cell-net><b>${fmtMoney(r.net)}</b></td>
+                    <td class="num" data-cell-outstanding>${outstanding === null ? `<span class="hint">&mdash;</span>` : `<b>${fmtMoney(outstanding)}</b>`}</td>
+                    <td class="num">
+                      ${
+                        outstanding > 0
+                          ? `<input type="number" data-deduct-bale data-gross="${r.gross}" data-advances="${r.advancesTotal}" data-outstanding="${outstanding}" min="0" max="${outstanding}" step="0.01" placeholder="0.00" style="width:100px;">`
+                          : `<span class="hint">&mdash;</span>`
+                      }
+                      ${confirmed > 0 ? `<div class="hint" style="margin-top:4px;">Confirmed so far: <b>${fmtMoney(confirmed)}</b></div>` : ''}
+                    </td>
+                    <td class="num" data-cell-remaining>${outstanding === null ? `<span class="hint">&mdash;</span>` : outstanding > 0 ? fmtMoney(outstanding) : `<span class="hint">None</span>`}</td>
+                  </tr>`;
+                })
                 .join('')}
-              <tr><td colspan="2"><b>Total</b></td><td class="num"><b>${fmtMoney(totals.gross)}</b></td><td class="num"><b>${fmtMoney(totals.advancesTotal)}</b></td><td class="num"><b>${fmtMoney(totals.net)}</b></td></tr>
-            </tbody></table></div>`
+              <tr><td colspan="2"><b>Total</b></td><td class="num"><b>${fmtMoney(totals.gross)}</b></td><td class="num"><b>${fmtMoney(totals.advancesTotal)}</b></td><td class="num"><b>${fmtMoney(totals.net)}</b></td><td></td><td></td><td></td></tr>
+            </tbody></table></div>
+            <button class="btn primary sm" id="pd-submit-payroll" style="margin-top:12px;">${ICONS.check}Submit for approval</button>`
       }
     `;
+
+    // Typing a deduction previews, live, what it does to that row's Net and
+    // to next week's starting "Outstanding bale" (shown here as "Remaining
+    // bale this week") — nothing is written to the database yet. The bale
+    // deduction only becomes real once Owner/Admin approves the submission.
+    tableEl.querySelectorAll('[data-deduct-bale]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const row = input.closest('tr');
+        const outstanding = Number(input.dataset.outstanding) || 0;
+        let val = Number(input.value) || 0;
+        if (val < 0) val = 0;
+        if (val > outstanding) val = outstanding;
+        const gross = Number(input.dataset.gross) || 0;
+        const advancesGiven = Number(input.dataset.advances) || 0;
+        const remaining = Math.max(0, outstanding - val);
+        const net = gross - advancesGiven - val;
+        const remainingCell = row.querySelector('[data-cell-remaining]');
+        const netCell = row.querySelector('[data-cell-net]');
+        if (remainingCell) remainingCell.innerHTML = remaining > 0 ? fmtMoney(remaining) : `<span class="hint">None</span>`;
+        if (netCell) netCell.innerHTML = `<b>${fmtMoney(net)}</b>`;
+      });
+    });
+
+    const submitBtn = document.getElementById('pd-submit-payroll');
+    if (submitBtn) {
+      submitBtn.addEventListener('click', async () => {
+        submitBtn.disabled = true;
+        try {
+          const snapshotRows = rows.map((r) => {
+            const rowEl = tableEl.querySelector(`[data-worker-row="${r.worker.id}"]`);
+            const input = rowEl ? rowEl.querySelector('[data-deduct-bale]') : null;
+            const outstanding = outstandingFor(r.worker);
+            let deducted = 0;
+            if (input) {
+              deducted = Number(input.value) || 0;
+              if (deducted < 0) deducted = 0;
+              if (outstanding != null && deducted > outstanding) deducted = outstanding;
+            }
+            return {
+              worker_id: r.worker.id,
+              manpower_id: r.worker.manpower_id ?? null,
+              full_name: r.worker.full_name,
+              days_present: r.daysPresent,
+              daily_rate: Number(r.worker.daily_rate) || 0,
+              gross: r.gross,
+              advances_given: r.advancesTotal,
+              outstanding_before: outstanding,
+              bale_deducted: deducted,
+              net: r.gross - r.advancesTotal - deducted,
+            };
+          });
+          await createPayrollRun({
+            project_id: project.id,
+            week_start: payrollMonday,
+            rows: snapshotRows,
+            submitted_by: currentUserId(),
+          });
+          toast('Payroll submitted for approval.', 'ok');
+          await refreshPayroll();
+        } catch (err) {
+          toast(err.message || 'Could not submit payroll.', 'error');
+        } finally {
+          submitBtn.disabled = false;
+        }
+      });
+    }
+  }
+
+  // Renders a submitted-or-approved payroll snapshot in place of the live
+  // editable view. Owner/Admin reviewing a "submitted" run can revise the
+  // bale-deducted amounts (attendance/gross/advances stay as submitted —
+  // if those need correcting, "Send back to draft" and have the site
+  // engineer redo it) before Approve actually applies the deduction to the
+  // centralized ledger. Once approved, the record is locked and printable.
+  function renderPayrollRunView(tableEl, run) {
+    const rows = run.rows || [];
+    const approver = isApprover();
+    const editable = run.status === 'submitted' && approver;
+    const totals = rows.reduce(
+      (acc, r) => ({
+        gross: acc.gross + (Number(r.gross) || 0),
+        advances: acc.advances + (Number(r.advances_given) || 0),
+        deducted: acc.deducted + (Number(r.bale_deducted) || 0),
+        net: acc.net + (Number(r.net) || 0),
+      }),
+      { gross: 0, advances: 0, deducted: 0, net: 0 }
+    );
+    const banner =
+      run.status === 'submitted'
+        ? `<div class="hint" style="margin-bottom:10px;">Submitted by ${esc(memberName(run.submitted_by))} on ${fmtDateTime(run.created_at)} &mdash; ${
+            approver ? 'review the bale figures below, then approve.' : 'awaiting Owner/Admin approval.'
+          }</div>`
+        : `<div class="hint" style="margin-bottom:10px;">Approved by ${esc(memberName(run.decided_by))} on ${fmtDateTime(run.decided_at)}.</div>`;
+
+    tableEl.innerHTML = `
+      <div class="hint" style="margin-bottom:8px;">${weekRangeLabel(run.week_start)}</div>
+      ${banner}
+      <div class="table-wrap"><table><thead><tr><th>Worker</th><th>Days present</th><th>Gross</th><th>Advances (this wk)</th><th>Bale deducted</th><th>Net</th></tr></thead><tbody>
+        ${rows
+          .map(
+            (r, i) => `<tr data-run-row="${i}">
+              <td>${esc(r.full_name)}</td>
+              <td class="num">${r.days_present}</td>
+              <td class="num">${fmtMoney(r.gross)}</td>
+              <td class="num">${fmtMoney(r.advances_given)}</td>
+              <td class="num">
+                ${
+                  editable
+                    ? `<input type="number" data-revise-deduct data-row-index="${i}" data-gross="${r.gross}" data-advances="${r.advances_given}" ${
+                        r.outstanding_before != null ? `data-outstanding="${r.outstanding_before}" max="${r.outstanding_before}"` : ''
+                      } min="0" step="0.01" value="${r.bale_deducted}" style="width:100px;">`
+                    : fmtMoney(r.bale_deducted)
+                }
+              </td>
+              <td class="num" data-cell-net><b>${fmtMoney(r.net)}</b></td>
+            </tr>`
+          )
+          .join('')}
+        <tr><td colspan="2"><b>Total</b></td><td class="num"><b>${fmtMoney(totals.gross)}</b></td><td class="num"><b>${fmtMoney(totals.advances)}</b></td><td class="num"><b>${fmtMoney(totals.deducted)}</b></td><td class="num"><b>${fmtMoney(totals.net)}</b></td></tr>
+      </tbody></table></div>
+      <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
+        ${editable ? `<button class="btn primary sm" id="pd-approve-payroll">${ICONS.check}Approve payroll</button><button class="btn ghost sm" id="pd-reopen-payroll">Send back to draft</button>` : ''}
+        ${run.status === 'approved' ? `<button class="btn sm" id="pd-print-payroll">${ICONS.print}Print payroll</button>` : ''}
+      </div>
+    `;
+
+    if (editable) {
+      tableEl.querySelectorAll('[data-revise-deduct]').forEach((input) => {
+        input.addEventListener('input', () => {
+          const row = input.closest('tr');
+          const outstandingRaw = input.dataset.outstanding;
+          const outstanding = outstandingRaw === undefined ? Infinity : Number(outstandingRaw);
+          let val = Number(input.value) || 0;
+          if (val < 0) val = 0;
+          if (val > outstanding) val = outstanding;
+          const gross = Number(input.dataset.gross) || 0;
+          const advancesGiven = Number(input.dataset.advances) || 0;
+          const net = gross - advancesGiven - val;
+          row.querySelector('[data-cell-net]').innerHTML = `<b>${fmtMoney(net)}</b>`;
+        });
+      });
+
+      document.getElementById('pd-approve-payroll').addEventListener('click', async () => {
+        const btn = document.getElementById('pd-approve-payroll');
+        btn.disabled = true;
+        try {
+          const finalRows = rows.map((r, i) => {
+            const input = tableEl.querySelector(`[data-revise-deduct][data-row-index="${i}"]`);
+            const deducted = input ? Math.max(0, Number(input.value) || 0) : Number(r.bale_deducted) || 0;
+            return { ...r, bale_deducted: deducted, net: r.gross - r.advances_given - deducted };
+          });
+          const shortfalls = [];
+          for (const r of finalRows) {
+            if (r.manpower_id != null && r.bale_deducted > 0) {
+              const applied = await settleManpowerBaleAmount(r.manpower_id, r.bale_deducted, currentUserId());
+              if (applied < r.bale_deducted - 0.005) shortfalls.push(`${r.full_name} (${fmtMoney(r.bale_deducted - applied)} short)`);
+            }
+          }
+          await updatePayrollRun(run.id, {
+            status: 'approved',
+            rows: finalRows,
+            decided_by: currentUserId(),
+            decided_at: new Date().toISOString(),
+          });
+          toast(
+            shortfalls.length ? `Approved, but not fully applied: ${shortfalls.join(', ')}.` : 'Payroll approved.',
+            shortfalls.length ? 'error' : 'ok'
+          );
+          await refreshPayroll();
+          await paintAdvancesList();
+        } catch (err) {
+          toast(err.message || 'Could not approve payroll.', 'error');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      document.getElementById('pd-reopen-payroll').addEventListener('click', async () => {
+        if (!confirm('Send this payroll back to draft? The site engineer will need to review and re-submit it.')) return;
+        try {
+          await deletePayrollRun(run.id);
+          toast('Payroll sent back to draft.', 'ok');
+          await refreshPayroll();
+        } catch (err) {
+          toast(err.message || 'Could not reopen payroll.', 'error');
+        }
+      });
+    }
+
+    if (run.status === 'approved') {
+      const printBtn = document.getElementById('pd-print-payroll');
+      if (printBtn) printBtn.addEventListener('click', () => printPayrollRun(run, project, memberName));
+    }
   }
 
   async function paintAdvancesList() {
@@ -707,19 +952,32 @@ async function paintManpower(el, project) {
     const workerName = (id) => workers.find((w) => w.id === id)?.full_name || '—';
     listEl.innerHTML = advances.length === 0
       ? `<div class="card empty">${ICONS.empty}<div class="lead">No advances logged yet</div></div>`
-      : `<div class="table-wrap card"><table><thead><tr><th>Date</th><th>Worker</th><th>Amount</th><th>Note</th><th>Given by</th></tr></thead><tbody>
+      : `<div class="table-wrap card"><table><thead><tr><th>Date</th><th>Worker</th><th>Amount</th><th>Remaining</th><th>Note</th><th>Given by</th><th></th></tr></thead><tbody>
           ${advances
-            .map(
-              (a) => `<tr>
+            .map((a) => {
+              const remaining = remainingBale(a);
+              return `<tr>
                 <td>${fmtDate(a.given_at)}</td>
                 <td>${esc(workerName(a.worker_id))}</td>
                 <td class="num">${fmtMoney(a.amount)}</td>
+                <td class="num">${remaining > 0 ? `<b>${fmtMoney(remaining)}</b>` : `<span class="hint">Settled</span>`}</td>
                 <td>${esc(a.note || '')}</td>
                 <td>${esc(memberName(a.given_by))}</td>
-              </tr>`
-            )
+                <td>${remaining > 0 ? `<button class="btn sm" data-settle-advance="${a.id}">Settle</button>` : ''}</td>
+              </tr>`;
+            })
             .join('')}
         </tbody></table></div>`;
+
+    listEl.querySelectorAll('[data-settle-advance]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const advance = advances.find((a) => String(a.id) === btn.dataset.settleAdvance);
+        if (advance) openSettleAdvanceModal(advance, workerName(advance.worker_id), async () => {
+          await paintAdvancesList();
+          await refreshPayroll();
+        });
+      });
+    });
   }
 
   paintWorkersList();
@@ -863,10 +1121,12 @@ function openAdvanceModal(project, workers, onSaved) {
     e.preventDefault();
     const worker_id = document.getElementById('adv-worker').value;
     if (!worker_id) return toast('Select a worker.', 'error');
+    const worker = workers.find((w) => String(w.id) === worker_id);
     try {
       await createAdvance({
         project_id: project.id,
         worker_id,
+        manpower_id: worker?.manpower_id ?? null,
         amount: Number(document.getElementById('adv-amount').value),
         note: document.getElementById('adv-note').value.trim() || null,
         given_by: currentUserId(),
@@ -880,3 +1140,4 @@ function openAdvanceModal(project, workers, onSaved) {
     }
   });
 }
+
