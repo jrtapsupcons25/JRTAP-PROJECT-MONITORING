@@ -92,6 +92,21 @@ export async function createMaterialRequest(fields) {
 export async function decideMaterialRequest(id, patch) {
   return must(await db.from('material_requests').update(patch).eq('id', id).select().single(), 'decideMaterialRequest');
 }
+// Site-side confirmation that an approved request's materials actually
+// arrived — a separate step from decideMaterialRequest (the admin's
+// approve/reject), gated by its own RLS policy (material_requests_receive)
+// so any account with project access can confirm receipt, not just an admin.
+export async function receiveMaterialRequest(id, receivedBy) {
+  return must(
+    await db
+      .from('material_requests')
+      .update({ status: 'received', received_by: receivedBy, received_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single(),
+    'receiveMaterialRequest'
+  );
+}
 
 /* ---------------- petty cash requests ---------------- */
 export async function fetchPettyCashRequests(filter = {}) {

@@ -1,7 +1,14 @@
 import { state, isApprover, currentUserId } from '../state.js';
 import { setPageTitle, setTopbarActions } from './shell.js';
 import { esc, fmtDate, fmtDateTime, pillClass, toast, openModal, closeModal, wireRepeater, readRepeaterRows } from '../utils.js';
-import { fetchProjects, fetchMaterialRequests, createMaterialRequest, decideMaterialRequest, fetchTeamMembers } from '../data.js';
+import {
+  fetchProjects,
+  fetchMaterialRequests,
+  createMaterialRequest,
+  decideMaterialRequest,
+  receiveMaterialRequest,
+  fetchTeamMembers,
+} from '../data.js';
 import { ICONS } from '../icons.js';
 
 let selectedProjectId = '';
@@ -51,9 +58,12 @@ async function paintList() {
               <td>${esc(r.item_name)}${r.notes ? `<div class="hint">${esc(r.notes)}</div>` : ''}</td>
               <td class="num">${esc(r.quantity ?? '—')} ${esc(r.unit || '')}</td>
               <td>${esc(memberName(r.requested_by))}</td>
-              <td><span class="pill ${pillClass(r.status)}">${r.status}</span>${r.decision_comment ? `<div class="hint">${esc(r.decision_comment)}</div>` : ''}</td>
+              <td><span class="pill ${pillClass(r.status)}">${r.status}</span>${r.decision_comment ? `<div class="hint">${esc(r.decision_comment)}</div>` : ''}${r.status === 'received' && r.received_at ? `<div class="hint">Received by ${esc(memberName(r.received_by))} on ${fmtDate(r.received_at)}</div>` : ''}</td>
               <td>${fmtDate(r.created_at)}</td>
-              <td>${approver && r.status === 'pending' ? `<button class="btn sm" data-decide="${r.id}">Review</button>` : ''}</td>
+              <td>
+                ${approver && r.status === 'pending' ? `<button class="btn sm" data-decide="${r.id}">Review</button>` : ''}
+                ${r.status === 'approved' ? `<button class="btn sm good" data-receive="${r.id}">${ICONS.check}Received</button>` : ''}
+              </td>
             </tr>`
           )
           .join('')}
@@ -61,6 +71,22 @@ async function paintList() {
 
   content.querySelectorAll('[data-decide]').forEach((btn) => {
     btn.addEventListener('click', () => openDecisionModal(requests.find((r) => String(r.id) === btn.dataset.decide)));
+  });
+  content.querySelectorAll('[data-receive]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const req = requests.find((r) => String(r.id) === btn.dataset.receive);
+      if (!req) return;
+      if (!confirm(`Confirm that ${req.quantity ?? ''} ${req.unit || ''} of "${req.item_name}" was received?`)) return;
+      btn.disabled = true;
+      try {
+        await receiveMaterialRequest(req.id, currentUserId());
+        toast('Marked as received.', 'ok');
+        await paintList();
+      } catch (err) {
+        toast(err.message || 'Could not confirm receipt.', 'error');
+        btn.disabled = false;
+      }
+    });
   });
 }
 

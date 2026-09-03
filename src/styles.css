@@ -228,6 +228,7 @@ textarea{ resize:vertical; min-height:64px; }
 .pill.pending{ background:var(--warn-bg); color:var(--warn); }
 .pill.approved{ background:var(--good-bg); color:var(--good); }
 .pill.rejected{ background:var(--bad-bg); color:var(--bad); }
+.pill.received{ background:var(--surface-2); color:var(--ink-dim); }
 .pill.active{ background:var(--info-bg); color:var(--accent); }
 .pill.on_hold{ background:var(--warn-bg); color:var(--warn); }
 .pill.planning{ background:var(--surface-2); color:var(--ink-dim); }
