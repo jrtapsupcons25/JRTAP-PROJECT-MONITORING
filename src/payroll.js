@@ -11,14 +11,16 @@ function dateOnly(ts) {
  * Returns { rows: [{worker, daysPresent, gross, advancesTotal, net}], totals }
  */
 export function weeklyPayrollForWorkers(workers, attendance, advances, mondayISO) {
-  const sunday = addDaysISO(mondayISO, 6);
+  // Work/payroll week is Monday-Saturday (6 days) -- Sunday is not a
+  // working day and payday is Saturday.
+  const saturday = addDaysISO(mondayISO, 5);
   const rows = workers.map((w) => {
     const daysPresent = attendance.filter(
-      (a) => a.worker_id === w.id && a.present !== false && a.work_date >= mondayISO && a.work_date <= sunday
+      (a) => a.worker_id === w.id && a.present !== false && a.work_date >= mondayISO && a.work_date <= saturday
     ).length;
     const gross = daysPresent * (Number(w.daily_rate) || 0);
     const advancesTotal = advances
-      .filter((a) => a.worker_id === w.id && dateOnly(a.given_at) >= mondayISO && dateOnly(a.given_at) <= sunday)
+      .filter((a) => a.worker_id === w.id && dateOnly(a.given_at) >= mondayISO && dateOnly(a.given_at) <= saturday)
       .reduce((s, a) => s + (Number(a.amount) || 0), 0);
     return { worker: w, daysPresent, gross, advancesTotal, net: gross - advancesTotal };
   });
@@ -124,13 +126,13 @@ export function centralizedBaleRows(manpowerTotals, manpowerList, workers, advan
 
 /**
  * How much bale has already been confirmed/deducted for one manpower person
- * during a given payroll week (Monday–Sunday), from the settlement ledger.
+ * during a given payroll week (Monday–Saturday), from the settlement ledger.
  * Bucketed by calendar date the same way advancesTotal is, so "this week"
  * means the same thing everywhere in payroll.
  */
 export function settledThisWeek(manpowerId, settlements, mondayISO) {
-  const sunday = addDaysISO(mondayISO, 6);
+  const saturday = addDaysISO(mondayISO, 5);
   return (settlements || [])
-    .filter((s) => s.manpower_id === manpowerId && dateOnly(s.settled_at) >= mondayISO && dateOnly(s.settled_at) <= sunday)
+    .filter((s) => s.manpower_id === manpowerId && dateOnly(s.settled_at) >= mondayISO && dateOnly(s.settled_at) <= saturday)
     .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
 }

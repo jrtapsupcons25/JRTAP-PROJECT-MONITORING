@@ -624,7 +624,7 @@ async function paintManpower(el, project, initialWeek) {
     <div class="section">
       <div class="section-head"><h2>Weekly payroll</h2></div>
       <div class="card card-pad">
-        <div class="field" style="max-width:220px;"><label for="pd-payroll-week">Week starting (Mon)</label><input type="date" id="pd-payroll-week" value="${payrollMonday}"></div>
+        <div class="field" style="max-width:220px;"><label for="pd-payroll-week">Week starting (Mon &ndash; pay Sat)</label><input type="date" id="pd-payroll-week" value="${payrollMonday}"></div>
         <div id="pd-payroll-table"></div>
       </div>
     </div>

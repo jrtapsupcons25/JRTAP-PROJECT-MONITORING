@@ -58,9 +58,11 @@ export function addDaysISO(isoDate, days) {
   return d.toISOString().slice(0, 10);
 }
 
+// The work/payroll week is Monday-Saturday (6 days) -- Sunday is not a
+// working day and payday is Saturday, the last day of the same week.
 export function weekRangeLabel(mondayISO) {
-  const sunday = addDaysISO(mondayISO, 6);
-  return `${fmtDate(mondayISO)} – ${fmtDate(sunday)}`;
+  const saturday = addDaysISO(mondayISO, 5);
+  return `${fmtDate(mondayISO)} – ${fmtDate(saturday)}`;
 }
 
 let toastRoot = null;
