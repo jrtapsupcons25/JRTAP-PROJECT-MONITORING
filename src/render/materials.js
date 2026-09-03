@@ -1,6 +1,6 @@
 import { state, isApprover, currentUserId } from '../state.js';
 import { setPageTitle, setTopbarActions } from './shell.js';
-import { esc, fmtDate, fmtDateTime, pillClass, toast, openModal, closeModal, wireRepeater, readRepeaterRows } from '../utils.js';
+import { esc, fmtDate, fmtDateTime, fmtMoney, pillClass, toast, openModal, closeModal, wireRepeater, readRepeaterRows } from '../utils.js';
 import {
   fetchProjects,
   fetchMaterialRequests,
@@ -49,7 +49,7 @@ async function paintList() {
   content.innerHTML = requests.length === 0
     ? `<div class="card empty">${ICONS.empty}<div class="lead">No material requests</div>Submit one with "New request" above.</div>`
     : `<div class="table-wrap card"><table><thead><tr>
-        <th>Project</th><th>Item</th><th>Qty</th><th>Requested by</th><th>Status</th><th>Date</th><th></th>
+        <th>Project</th><th>Item</th><th>Qty</th><th>Cost</th><th>Requested by</th><th>Status</th><th>Date</th><th></th>
       </tr></thead><tbody>
         ${requests
           .map(
@@ -57,6 +57,7 @@ async function paintList() {
               <td>${esc(projectName(r.project_id))}</td>
               <td>${esc(r.item_name)}${r.notes ? `<div class="hint">${esc(r.notes)}</div>` : ''}</td>
               <td class="num">${esc(r.quantity ?? '—')} ${esc(r.unit || '')}</td>
+              <td class="num">${r.unit_cost != null ? `${fmtMoney(r.unit_cost)}<div class="hint">Total: ${fmtMoney((Number(r.quantity) || 0) * Number(r.unit_cost))}</div>` : '—'}</td>
               <td>${esc(memberName(r.requested_by))}</td>
               <td><span class="pill ${pillClass(r.status)}">${r.status}</span>${r.decision_comment ? `<div class="hint">${esc(r.decision_comment)}</div>` : ''}${r.status === 'received' && r.received_at ? `<div class="hint">Received by ${esc(memberName(r.received_by))} on ${fmtDate(r.received_at)}</div>` : ''}</td>
               <td>${fmtDate(r.created_at)}</td>
@@ -163,6 +164,7 @@ function openDecisionModal(req) {
             <div>Requested by: <b>${esc(memberName)}</b> on ${fmtDateTime(req.created_at)}</div>
             ${req.notes ? `<div>Notes: ${esc(req.notes)}</div>` : ''}
           </div>
+          <div class="field"><label for="decision-unit-cost">Unit cost (&#8369;, optional)</label><input type="number" id="decision-unit-cost" min="0" step="0.01" value="${req.unit_cost ?? ''}" placeholder="Price agreed with supplier"></div>
           <div class="field"><label for="decision-comment">Comment (optional)</label><textarea id="decision-comment" maxlength="300"></textarea></div>
         </div>
         <div class="modal-foot">
@@ -175,12 +177,15 @@ function openDecisionModal(req) {
   `);
   const decide = async (status) => {
     const decision_comment = document.getElementById('decision-comment').value.trim() || null;
+    const unitCostRaw = document.getElementById('decision-unit-cost').value;
+    const unit_cost = unitCostRaw === '' ? null : Number(unitCostRaw);
     try {
       await decideMaterialRequest(req.id, {
         status,
         decided_by: currentUserId(),
         decided_at: new Date().toISOString(),
         decision_comment,
+        unit_cost,
       });
       toast(`Request ${status}.`, 'ok');
       closeModal();

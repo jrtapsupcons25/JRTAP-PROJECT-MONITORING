@@ -463,7 +463,7 @@ async function paintMaterialsList(project) {
   const rows = await fetchDirectMaterials(project.id);
   listEl.innerHTML = rows.length === 0
     ? `<div class="card empty">${ICONS.empty}<div class="lead">No materials logged yet</div></div>`
-    : `<div class="table-wrap card"><table><thead><tr><th>Date</th><th>Direction</th><th>Item</th><th>Qty</th><th>Unit cost</th><th>Logged by</th><th>Note</th></tr></thead><tbody>
+    : `<div class="table-wrap card"><table><thead><tr><th>Date</th><th>Direction</th><th>Item</th><th>Qty</th><th>Unit cost</th><th>Total cost</th><th>Logged by</th><th>Note</th></tr></thead><tbody>
         ${rows
           .map(
             (r) => `<tr>
@@ -472,6 +472,7 @@ async function paintMaterialsList(project) {
               <td>${esc(r.item_name)}</td>
               <td class="num">${esc(r.quantity ?? '—')} ${esc(r.unit || '')}</td>
               <td class="num">${r.unit_cost ? fmtMoney(r.unit_cost) : '—'}</td>
+              <td class="num">${r.unit_cost && r.quantity != null ? fmtMoney(Number(r.quantity) * Number(r.unit_cost)) : '—'}</td>
               <td>${esc(memberName(r.logged_by))}</td>
               <td>${esc(r.note || '')}</td>
             </tr>`
