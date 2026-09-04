@@ -166,6 +166,10 @@ nav.mainnav{ padding:12px 10px; display:flex; flex-direction:column; gap:2px; fl
   background:var(--surface) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%23888581" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>') no-repeat right 8px center / 14px;
   color:var(--ink); font-size:13px; font-weight:600; -webkit-appearance:none; appearance:none; cursor:pointer;
 }
+.filter-search{
+  width:200px; padding:8px 12px; border-radius:8px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink); font-size:13px;
+}
 
 #content{ flex:1; padding:24px 28px 60px; max-width:1180px; width:100%; margin:0 auto; }
 

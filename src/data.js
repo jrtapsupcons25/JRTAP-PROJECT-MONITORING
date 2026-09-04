@@ -278,6 +278,15 @@ export async function createWorker(fields) {
 export async function updateWorker(id, patch) {
   return must(await db.from('workers').update(patch).eq('id', id).select().single(), 'updateWorker');
 }
+// Hard delete -- only meant for a worker who was added to a project's
+// roster by mistake and has no real attendance/advances against them yet.
+// attendance.worker_id and advances.worker_id both cascade-delete on this,
+// so callers MUST check for existing history first and steer toward
+// deactivating (updateWorker(id, {active:false})) instead when there is any
+// -- see the confirm flow in projectDetail.js's roster "Remove" button.
+export async function deleteWorker(id) {
+  return must(await db.from('workers').delete().eq('id', id), 'deleteWorker');
+}
 
 /* ---------------- attendance ---------------- */
 export async function fetchAttendance(projectId) {

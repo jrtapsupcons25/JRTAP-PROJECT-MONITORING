@@ -17,66 +17,156 @@ function startingBaleRemaining(m) {
   return Math.max(0, (Number(m.starting_bale) || 0) - (Number(m.starting_bale_settled) || 0));
 }
 
+// Filter state, kept in module scope rather than re-fetched per keystroke --
+// with 50+ people in the registry, typing into a filter shouldn't cost a
+// network round trip each time. `allRows` is the last fetch from the
+// server; every filter change just re-slices and re-renders that in-memory
+// copy (`applyFiltersAndRender`). `loadAndPaint` (an actual re-fetch) only
+// runs after something changes the underlying data -- register, edit,
+// toggle active/inactive, or settle a starting bale.
+let allRows = [];
+let searchQuery = '';
+let positionFilter = '';
+let statusFilter = ''; // '' = all, 'active', 'inactive'
+
 export async function renderManpower() {
   setPageTitle('People', 'Manpower');
-  setTopbarActions(`<button class="btn primary" id="new-manpower-btn">${ICONS.plus}Register manpower</button>`);
   const content = document.getElementById('content');
   content.innerHTML = `<div class="loading-row">Loading…</div>`;
 
-  await paintList();
-
-  document.getElementById('new-manpower-btn').addEventListener('click', () => openManpowerModal());
+  await loadAndPaint();
 }
 
-async function paintList() {
-  const content = document.getElementById('content');
-  const rows = await fetchManpower();
+async function loadAndPaint() {
+  allRows = await fetchManpower();
+  paintTopbar();
+  applyFiltersAndRender();
+}
 
-  content.innerHTML = rows.length === 0
-    ? `<div class="card empty">${ICONS.team}<div class="lead">No manpower registered yet</div>Register workers here so Site Supervisors can pick them into a project's roster by name &mdash; no re-typing position or rate per project.</div>`
-    : `<div class="table-wrap card"><table><thead><tr>
-        <th>Name</th><th>Address</th><th>Position</th><th>Rate</th><th>Contact no.</th><th>Contact person</th><th>Starting bale</th><th>Status</th><th></th>
-      </tr></thead><tbody>
-        ${rows
-          .map((m) => {
-            const remaining = startingBaleRemaining(m);
-            return `<tr>
-              <td>${esc(m.full_name)}</td>
-              <td>${esc(m.address || '—')}</td>
-              <td>${esc(m.job_position || '—')}</td>
-              <td class="num">${m.daily_rate ? fmtMoney(m.daily_rate) : '—'}</td>
-              <td>${esc(m.contact_no || '—')}</td>
-              <td>${esc(m.contact_person || '—')}</td>
-              <td class="num">
-                ${
-                  Number(m.starting_bale) > 0
-                    ? `<b>${fmtMoney(remaining)}</b>${remaining > 0 ? ` of ${fmtMoney(m.starting_bale)}` : ' (settled)'}${
-                        remaining > 0 ? `<br><button class="btn sm" data-settle-starting-bale="${m.id}">Settle</button>` : ''
-                      }`
-                    : '—'
-                }
-              </td>
-              <td><span class="pill ${m.active === false ? 'inactive' : 'approved'}">${m.active === false ? 'Inactive' : 'Active'}</span></td>
-              <td>
-                <div class="row-actions">
-                  <button class="btn sm" data-edit-manpower="${m.id}">Edit</button>
-                  <button class="btn sm" data-toggle-manpower="${m.id}" data-next="${m.active === false ? 'true' : 'false'}">${m.active === false ? 'Reactivate' : 'Deactivate'}</button>
-                </div>
-              </td>
-            </tr>`;
-          })
-          .join('')}
-      </tbody></table></div>`;
+function paintTopbar() {
+  // Position options come from whatever's actually in the registry right
+  // now, not a fixed list -- since Position is free-typed (see the same
+  // caveat on the Overview tab's Total Salary by Position), two workers
+  // typed as "Welder" and "welder" would show as two separate options here
+  // too, rather than being combined.
+  const positions = [...new Set(allRows.map((m) => (m.job_position || '').trim()).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b)
+  );
+  setTopbarActions(`
+    <input type="text" class="filter-search" id="mp-search" placeholder="Search name, position, contact…" value="${esc(searchQuery)}">
+    <select class="filter-select" id="mp-position-filter">
+      <option value="">All positions</option>
+      ${positions.map((p) => `<option value="${esc(p)}" ${p === positionFilter ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+    </select>
+    <select class="filter-select" id="mp-status-filter">
+      <option value="" ${statusFilter === '' ? 'selected' : ''}>All statuses</option>
+      <option value="active" ${statusFilter === 'active' ? 'selected' : ''}>Active only</option>
+      <option value="inactive" ${statusFilter === 'inactive' ? 'selected' : ''}>Inactive only</option>
+    </select>
+    <button class="btn primary" id="new-manpower-btn">${ICONS.plus}Register manpower</button>
+  `);
+  document.getElementById('new-manpower-btn').addEventListener('click', () => openManpowerModal());
+  document.getElementById('mp-search').addEventListener('input', (e) => {
+    searchQuery = e.target.value;
+    applyFiltersAndRender();
+  });
+  document.getElementById('mp-position-filter').addEventListener('change', (e) => {
+    positionFilter = e.target.value;
+    applyFiltersAndRender();
+  });
+  document.getElementById('mp-status-filter').addEventListener('change', (e) => {
+    statusFilter = e.target.value;
+    applyFiltersAndRender();
+  });
+}
+
+function applyFiltersAndRender() {
+  const content = document.getElementById('content');
+  const q = searchQuery.trim().toLowerCase();
+  const rows = allRows.filter((m) => {
+    if (statusFilter === 'active' && m.active === false) return false;
+    if (statusFilter === 'inactive' && m.active !== false) return false;
+    if (positionFilter && (m.job_position || '').trim() !== positionFilter) return false;
+    if (q) {
+      const haystack = [m.full_name, m.job_position, m.contact_no, m.contact_person, m.address]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+  const filtersActive = q || positionFilter || statusFilter;
+
+  if (allRows.length === 0) {
+    content.innerHTML = `<div class="card empty">${ICONS.team}<div class="lead">No manpower registered yet</div>Register workers here so Site Supervisors can pick them into a project's roster by name &mdash; no re-typing position or rate per project.</div>`;
+    return;
+  }
+
+  content.innerHTML = `
+    <div class="hint" style="margin-bottom:10px;">
+      Showing ${rows.length} of ${allRows.length}${filtersActive ? ` &mdash; <a href="#" id="mp-clear-filters">Clear filters</a>` : ''}
+    </div>
+    ${
+      rows.length === 0
+        ? `<div class="card empty">${ICONS.team}<div class="lead">No matches</div>Nobody in the registry matches this filter. <a href="#" id="mp-clear-filters-2">Clear filters</a> to see everyone.</div>`
+        : `<div class="table-wrap card"><table><thead><tr>
+            <th>Name</th><th>Address</th><th>Position</th><th>Rate</th><th>Contact no.</th><th>Contact person</th><th>Starting bale</th><th>Status</th><th></th>
+          </tr></thead><tbody>
+            ${rows
+              .map((m) => {
+                const remaining = startingBaleRemaining(m);
+                return `<tr>
+                  <td>${esc(m.full_name)}</td>
+                  <td>${esc(m.address || '—')}</td>
+                  <td>${esc(m.job_position || '—')}</td>
+                  <td class="num">${m.daily_rate ? fmtMoney(m.daily_rate) : '—'}</td>
+                  <td>${esc(m.contact_no || '—')}</td>
+                  <td>${esc(m.contact_person || '—')}</td>
+                  <td class="num">
+                    ${
+                      Number(m.starting_bale) > 0
+                        ? `<b>${fmtMoney(remaining)}</b>${remaining > 0 ? ` of ${fmtMoney(m.starting_bale)}` : ' (settled)'}${
+                            remaining > 0 ? `<br><button class="btn sm" data-settle-starting-bale="${m.id}">Settle</button>` : ''
+                          }`
+                        : '—'
+                    }
+                  </td>
+                  <td><span class="pill ${m.active === false ? 'inactive' : 'approved'}">${m.active === false ? 'Inactive' : 'Active'}</span></td>
+                  <td>
+                    <div class="row-actions">
+                      <button class="btn sm" data-edit-manpower="${m.id}">Edit</button>
+                      <button class="btn sm" data-toggle-manpower="${m.id}" data-next="${m.active === false ? 'true' : 'false'}">${m.active === false ? 'Reactivate' : 'Deactivate'}</button>
+                    </div>
+                  </td>
+                </tr>`;
+              })
+              .join('')}
+          </tbody></table></div>`
+    }
+  `;
+
+  const clearFilters = () => {
+    searchQuery = '';
+    positionFilter = '';
+    statusFilter = '';
+    paintTopbar();
+    applyFiltersAndRender();
+  };
+  const clearBtn1 = document.getElementById('mp-clear-filters');
+  if (clearBtn1) clearBtn1.addEventListener('click', (e) => { e.preventDefault(); clearFilters(); });
+  const clearBtn2 = document.getElementById('mp-clear-filters-2');
+  if (clearBtn2) clearBtn2.addEventListener('click', (e) => { e.preventDefault(); clearFilters(); });
 
   content.querySelectorAll('[data-edit-manpower]').forEach((btn) => {
-    btn.addEventListener('click', () => openManpowerModal(rows.find((m) => String(m.id) === btn.dataset.editManpower)));
+    btn.addEventListener('click', () => openManpowerModal(allRows.find((m) => String(m.id) === btn.dataset.editManpower)));
   });
   content.querySelectorAll('[data-toggle-manpower]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       try {
         await updateManpower(btn.dataset.toggleManpower, { active: btn.dataset.next === 'true' });
         toast(btn.dataset.next === 'true' ? 'Manpower reactivated.' : 'Manpower deactivated.', 'ok');
-        await paintList();
+        await loadAndPaint();
       } catch (err) {
         toast(err.message || 'Could not update manpower.', 'error');
       }
@@ -84,9 +174,9 @@ async function paintList() {
   });
   content.querySelectorAll('[data-settle-starting-bale]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const m = rows.find((row) => String(row.id) === btn.dataset.settleStartingBale);
+      const m = allRows.find((row) => String(row.id) === btn.dataset.settleStartingBale);
       if (!m) return;
-      openSettleStartingBaleModal(m, () => paintList());
+      openSettleStartingBaleModal(m, () => loadAndPaint());
     });
   });
 }
@@ -143,7 +233,7 @@ function openManpowerModal(entry) {
       else await createManpower(fields);
       toast(isEdit ? 'Manpower updated.' : 'Manpower registered.', 'ok');
       closeModal();
-      await paintList();
+      await loadAndPaint();
     } catch (err) {
       toast(err.message || 'Could not save manpower.', 'error');
     }

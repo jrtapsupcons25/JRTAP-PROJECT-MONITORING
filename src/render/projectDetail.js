@@ -24,6 +24,7 @@ import {
   fetchWorkers,
   createWorker,
   updateWorker,
+  deleteWorker,
   fetchAttendance,
   upsertAttendance,
   fetchAdvances,
@@ -730,7 +731,12 @@ async function paintManpower(el, project, initialWeek) {
                 <td>${esc(w.trade || '—')}</td>
                 <td class="num">${fmtMoney(w.daily_rate)}</td>
                 <td><span class="pill ${w.active === false ? 'inactive' : 'approved'}">${w.active === false ? 'Inactive' : 'Active'}</span></td>
-                <td><button class="btn sm" data-edit-worker="${w.id}">Edit</button></td>
+                <td>
+                  <div class="row-actions">
+                    <button class="btn sm" data-edit-worker="${w.id}">Edit</button>
+                    <button class="btn sm bad" data-remove-worker="${w.id}">Remove</button>
+                  </div>
+                </td>
               </tr>`
             )
             .join('')}
@@ -738,6 +744,43 @@ async function paintManpower(el, project, initialWeek) {
     listEl.querySelectorAll('[data-edit-worker]').forEach((btn) => {
       btn.addEventListener('click', () => openWorkerModal(project, workers.find((w) => String(w.id) === btn.dataset.editWorker), refreshWorkers));
     });
+    listEl.querySelectorAll('[data-remove-worker]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const w = workers.find((row) => String(row.id) === btn.dataset.removeWorker);
+        if (w) handleRemoveWorker(w);
+      });
+    });
+  }
+
+  // "Remove" is for cleaning up a worker who doesn't actually belong on
+  // this project's roster (added by mistake, wrong project, etc.) -- a hard
+  // delete. attendance.worker_id/advances.worker_id both cascade-delete off
+  // siteops.workers, so removing someone who has real attendance or bale
+  // history here would silently wipe that history too (and quietly shrink
+  // the Overview tab's all-time salary/materials totals). So this checks
+  // for any such history first and refuses, pointing to "Deactivate"
+  // instead (edit the worker, set Status to Inactive) -- that hides them
+  // from the active roster/payroll without losing what's already recorded.
+  async function handleRemoveWorker(w) {
+    const [workerAttendance, workerAdvances] = await Promise.all([fetchAttendance(project.id), fetchAdvances(project.id)]);
+    const hasHistory =
+      workerAttendance.some((a) => a.worker_id === w.id) || workerAdvances.some((a) => a.worker_id === w.id);
+    if (hasHistory) {
+      toast(
+        `${w.full_name} already has attendance or bale logged on this project — removing would permanently delete that history too. Edit them and set Status to Inactive instead to take them off the active roster without losing it.`,
+        'error'
+      );
+      return;
+    }
+    if (!confirm(`Remove ${w.full_name} from this project's roster? They have no attendance or bale logged here, so nothing else is affected.`))
+      return;
+    try {
+      await deleteWorker(w.id);
+      toast('Worker removed from roster.', 'ok');
+      await refreshWorkers();
+    } catch (err) {
+      toast(err.message || 'Could not remove worker.', 'error');
+    }
   }
 
   function paintAttendanceGrid() {
