@@ -12,6 +12,7 @@ import {
   todayISO,
   mondayOf,
   weekRangeLabel,
+  addDaysISO,
 } from '../utils.js';
 import {
   fetchProjects,
@@ -69,8 +70,27 @@ const TABS = [
 ];
 
 // module-scoped UI state for the manpower tab
-let attendanceDate = todayISO();
+let attendanceWeekMonday = mondayOf(todayISO());
 let payrollMonday = mondayOf(todayISO());
+
+// Attendance is a 3-state cycle per worker per day: no record yet ('unset')
+// -> full day -> half day (e.g. morning only) -> absent -> back to full.
+// A half day counts as 0.5 toward payroll's "days present"; an absent (or
+// still-unset) day counts as 0. Clicking never goes back to 'unset' -- once
+// a day is marked, correcting it just means clicking through to the right
+// state, which matches how the rest of the app treats attendance (there was
+// never an "unmark" affordance on the old single-day checkbox either).
+const ATT_STATUS_LABEL = { full: 'Full', half: 'Half', absent: 'Absent', unset: '—' };
+function nextAttStatus(status) {
+  if (status === 'full') return 'half';
+  if (status === 'half') return 'absent';
+  return 'full'; // covers 'absent' and 'unset'
+}
+function attDayShortLabel(iso) {
+  const [, m, d] = iso.split('-');
+  return `${Number(m)}/${Number(d)}`;
+}
+const ATT_DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export async function renderProjectDetail({ id, tab, week }) {
   const content = document.getElementById('content');
@@ -612,8 +632,14 @@ async function paintManpower(el, project, initialWeek) {
     <div class="section">
       <div class="section-head"><h2>Attendance</h2></div>
       <div class="card card-pad">
-        <div class="field" style="max-width:220px;"><label for="pd-att-date">Date</label><input type="date" id="pd-att-date" value="${attendanceDate}"></div>
-        <div id="pd-att-grid"></div>
+        <div style="display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+          <div class="field" style="max-width:220px;"><label for="pd-att-week">Week starting (Mon)</label><input type="date" id="pd-att-week" value="${attendanceWeekMonday}"></div>
+          <button class="btn ghost sm" id="pd-att-prev" type="button">&larr; Prev week</button>
+          <button class="btn ghost sm" id="pd-att-next" type="button">Next week &rarr;</button>
+          <div class="hint" id="pd-att-range" style="margin-left:auto;">${weekRangeLabel(attendanceWeekMonday)}</div>
+        </div>
+        <div class="hint" style="margin:10px 0;">Tap a day to mark it &mdash; cycles Full day &rarr; Half day (e.g. morning only) &rarr; Absent.</div>
+        <div id="pd-att-grid" class="table-wrap"></div>
         <button class="btn primary sm" id="pd-att-save" style="margin-top:12px;">Save attendance</button>
       </div>
     </div>
@@ -664,25 +690,58 @@ async function paintManpower(el, project, initialWeek) {
 
   function paintAttendanceGrid() {
     const gridEl = document.getElementById('pd-att-grid');
+    const rangeEl = document.getElementById('pd-att-range');
+    if (rangeEl) rangeEl.textContent = weekRangeLabel(attendanceWeekMonday);
     if (!gridEl) return;
     const activeWorkers = workers.filter((w) => w.active !== false);
+    const days = [0, 1, 2, 3, 4, 5].map((i) => addDaysISO(attendanceWeekMonday, i));
     if (activeWorkers.length === 0) {
       gridEl.innerHTML = `<div class="hint">Add workers first.</div>`;
       return;
     }
     fetchAttendance(project.id).then((attendance) => {
-      const presentSet = new Set(
-        attendance.filter((a) => a.work_date === attendanceDate && a.present !== false).map((a) => a.worker_id)
-      );
-      gridEl.innerHTML = `<div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">${activeWorkers
-        .map(
-          (w) => `<label class="att-worker-row">
-            <input type="checkbox" data-att-worker="${w.id}" ${presentSet.has(w.id) ? 'checked' : ''}>
-            <span>${esc(w.full_name)}</span>
-            <span class="hint" style="margin-left:auto;">${esc(w.trade || '')}</span>
-          </label>`
-        )
-        .join('')}</div>`;
+      const statusFor = (workerId, dateIso) => {
+        const row = attendance.find((a) => a.worker_id === workerId && a.work_date === dateIso);
+        return row ? row.status : 'unset';
+      };
+      gridEl.innerHTML = `<table class="att-table"><thead><tr>
+          <th>Worker</th>
+          ${days.map((d, i) => `<th>${ATT_DAY_NAMES[i]}<br><span class="hint" style="text-transform:none;">${attDayShortLabel(d)}</span></th>`).join('')}
+          <th>Days</th>
+        </tr></thead><tbody>
+        ${activeWorkers
+          .map((w) => {
+            const cells = days
+              .map((d) => {
+                const status = statusFor(w.id, d);
+                return `<td class="att-cell"><button type="button" class="att-toggle att-${status}" data-att-worker="${w.id}" data-att-date="${d}" data-status="${status}">${ATT_STATUS_LABEL[status]}</button></td>`;
+              })
+              .join('');
+            return `<tr data-att-row="${w.id}"><td>${esc(w.full_name)}${w.trade ? `<div class="hint">${esc(w.trade)}</div>` : ''}</td>${cells}<td class="num" data-att-total>0</td></tr>`;
+          })
+          .join('')}
+      </tbody></table>`;
+
+      function recomputeTotal(row) {
+        const total = Array.from(row.querySelectorAll('[data-att-worker]')).reduce((sum, btn) => {
+          const s = btn.dataset.status;
+          return sum + (s === 'full' ? 1 : s === 'half' ? 0.5 : 0);
+        }, 0);
+        const cell = row.querySelector('[data-att-total]');
+        if (cell) cell.textContent = Number.isInteger(total) ? String(total) : total.toFixed(1);
+      }
+
+      gridEl.querySelectorAll('[data-att-row]').forEach(recomputeTotal);
+
+      gridEl.querySelectorAll('[data-att-worker]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const next = nextAttStatus(btn.dataset.status);
+          btn.dataset.status = next;
+          btn.textContent = ATT_STATUS_LABEL[next];
+          btn.className = `att-toggle att-${next}`;
+          recomputeTotal(btn.closest('[data-att-row]'));
+        });
+      });
     });
   }
 
@@ -993,8 +1052,18 @@ async function paintManpower(el, project, initialWeek) {
       await refreshPayroll();
     })
   );
-  document.getElementById('pd-att-date').addEventListener('change', (e) => {
-    attendanceDate = e.target.value;
+  document.getElementById('pd-att-week').addEventListener('change', (e) => {
+    attendanceWeekMonday = mondayOf(e.target.value || todayISO());
+    paintAttendanceGrid();
+  });
+  document.getElementById('pd-att-prev').addEventListener('click', () => {
+    attendanceWeekMonday = addDaysISO(attendanceWeekMonday, -7);
+    document.getElementById('pd-att-week').value = attendanceWeekMonday;
+    paintAttendanceGrid();
+  });
+  document.getElementById('pd-att-next').addEventListener('click', () => {
+    attendanceWeekMonday = addDaysISO(attendanceWeekMonday, 7);
+    document.getElementById('pd-att-week').value = attendanceWeekMonday;
     paintAttendanceGrid();
   });
   document.getElementById('pd-payroll-week').addEventListener('change', (e) => {
@@ -1003,13 +1072,15 @@ async function paintManpower(el, project, initialWeek) {
   });
   document.getElementById('pd-att-save').addEventListener('click', async () => {
     const gridEl = document.getElementById('pd-att-grid');
-    const rows = Array.from(gridEl.querySelectorAll('[data-att-worker]')).map((cb) => ({
-      project_id: project.id,
-      worker_id: cb.dataset.attWorker,
-      work_date: attendanceDate,
-      present: cb.checked,
-      logged_by: currentUserId(),
-    }));
+    const rows = Array.from(gridEl.querySelectorAll('[data-att-worker]'))
+      .filter((btn) => btn.dataset.status !== 'unset')
+      .map((btn) => ({
+        project_id: project.id,
+        worker_id: btn.dataset.attWorker,
+        work_date: btn.dataset.attDate,
+        status: btn.dataset.status,
+        logged_by: currentUserId(),
+      }));
     try {
       await upsertAttendance(rows);
       toast('Attendance saved.', 'ok');

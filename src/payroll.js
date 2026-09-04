@@ -15,9 +15,12 @@ export function weeklyPayrollForWorkers(workers, attendance, advances, mondayISO
   // working day and payday is Saturday.
   const saturday = addDaysISO(mondayISO, 5);
   const rows = workers.map((w) => {
-    const daysPresent = attendance.filter(
-      (a) => a.worker_id === w.id && a.present !== false && a.work_date >= mondayISO && a.work_date <= saturday
-    ).length;
+    // A day counts as 1 (full), 0.5 (half, e.g. morning only), or 0 (absent /
+    // no record yet) toward "days present" -- so this can come out fractional
+    // (e.g. 4.5), which is fine for both display and the gross-pay math below.
+    const daysPresent = attendance
+      .filter((a) => a.worker_id === w.id && a.work_date >= mondayISO && a.work_date <= saturday)
+      .reduce((sum, a) => sum + (a.status === 'full' ? 1 : a.status === 'half' ? 0.5 : 0), 0);
     const gross = daysPresent * (Number(w.daily_rate) || 0);
     const advancesTotal = advances
       .filter((a) => a.worker_id === w.id && dateOnly(a.given_at) >= mondayISO && dateOnly(a.given_at) <= saturday)
