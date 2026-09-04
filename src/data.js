@@ -64,6 +64,18 @@ export async function fetchBaleSettlements(manpowerIds) {
 export async function createBaleSettlement(fields) {
   return must(await db.from('bale_settlements').insert(fields).select().single(), 'createBaleSettlement');
 }
+// The settlement rows one specific payroll approval produced (via its
+// payroll_run_id) -- used to reverse exactly that deduction if the run is
+// later reopened, without touching any other settlement made before/since.
+export async function fetchBaleSettlementsForRun(payrollRunId) {
+  return must(
+    await db.from('bale_settlements').select('*').eq('payroll_run_id', payrollRunId),
+    'fetchBaleSettlementsForRun'
+  );
+}
+export async function deleteBaleSettlement(id) {
+  return must(await db.from('bale_settlements').delete().eq('id', id), 'deleteBaleSettlement');
+}
 
 /* ---------------- payroll runs (submit -> approve -> print workflow) ---------------- */
 export async function fetchPayrollRun(projectId, weekStart) {

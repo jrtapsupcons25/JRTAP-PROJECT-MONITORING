@@ -4,7 +4,15 @@
 // bale can be spread across more than one project once they've been logged
 // against advances tied to different sites.
 import { esc, fmtMoney, fmtDate, toast, openModal, closeModal } from '../utils.js';
-import { fetchAdvances, fetchProjects, updateAdvance, createBaleSettlement } from '../data.js';
+import {
+  fetchAdvances,
+  fetchProjects,
+  updateAdvance,
+  createBaleSettlement,
+  fetchBaleSettlementsForRun,
+  deleteBaleSettlement,
+  deletePayrollRun,
+} from '../data.js';
 import { remainingBale } from '../payroll.js';
 import { currentUserId } from '../state.js';
 import { ICONS } from '../icons.js';
@@ -74,8 +82,14 @@ export function openSettleAdvanceModal(advance, workerLabel, onSaved) {
  * outstanding total (some of it may sit under a project this account isn't
  * assigned to). Returns the amount actually applied, so the caller can warn
  * if it's less than what was requested.
+ *
+ * `payrollRunId` (optional) tags each settlement row this call creates with
+ * the payroll_runs row that triggered it, when called from the "Approve
+ * payroll" flow — that's what lets a later "Reopen" on that same run find
+ * and reverse exactly this deduction, and nothing else. A manual "Settle"
+ * click (bale.js's own modal, not payroll approval) omits it.
  */
-export async function settleManpowerBaleAmount(manpowerId, amount, settledBy) {
+export async function settleManpowerBaleAmount(manpowerId, amount, settledBy, payrollRunId) {
   let left = Math.max(0, Number(amount) || 0);
   if (left <= 0) return 0;
   const advances = await fetchAdvances();
@@ -90,11 +104,52 @@ export async function settleManpowerBaleAmount(manpowerId, amount, settledBy) {
     if (left <= 0) break;
     const chunk = Math.min(left, r.remaining);
     await updateAdvance(r.id, { settled_amount: Number(r.settled_amount || 0) + chunk });
-    await createBaleSettlement({ manpower_id: manpowerId, advance_id: r.id, amount: chunk, settled_by: settledBy });
+    await createBaleSettlement({
+      manpower_id: manpowerId,
+      advance_id: r.id,
+      amount: chunk,
+      settled_by: settledBy,
+      payroll_run_id: payrollRunId ?? null,
+    });
     left -= chunk;
     applied += chunk;
   }
   return applied;
+}
+
+/**
+ * Undoes exactly one payroll run's approval: reverses every bale deduction
+ * that run's "Approve" click applied (found via each settlement's
+ * payroll_run_id, so nothing settled before or since is touched), then
+ * deletes the payroll_runs row itself -- same as "Send back to draft" on a
+ * submitted run, landing back at the live table that recomputes straight
+ * from current attendance/advances. Used when a payroll was approved too
+ * early (e.g. before that week's attendance was finished) and needs to
+ * recompute against what's actually on record now.
+ *
+ * A settlement can be spread across more than one advance (FIFO, oldest
+ * first, same as settleManpowerBaleAmount above), so this walks all of that
+ * run's settlement rows and, for each, subtracts its amount back off the
+ * matching advance's settled_amount -- accumulating locally in case more
+ * than one settlement from this run touched the same advance -- before
+ * deleting the settlement row.
+ */
+export async function reopenApprovedPayrollRun(run) {
+  const settlements = await fetchBaleSettlementsForRun(run.id);
+  if (settlements.length > 0) {
+    const advances = await fetchAdvances();
+    const settledAmountById = new Map(advances.map((a) => [a.id, Number(a.settled_amount) || 0]));
+    for (const s of settlements) {
+      if (settledAmountById.has(s.advance_id)) {
+        const current = settledAmountById.get(s.advance_id);
+        const restored = Math.max(0, current - (Number(s.amount) || 0));
+        await updateAdvance(s.advance_id, { settled_amount: restored });
+        settledAmountById.set(s.advance_id, restored);
+      }
+      await deleteBaleSettlement(s.id);
+    }
+  }
+  await deletePayrollRun(run.id);
 }
 
 export async function openManpowerBaleModal(manpowerId, displayName, onSaved) {

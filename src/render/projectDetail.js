@@ -55,7 +55,7 @@ import { buildProgressChart } from './progressChart.js';
 import { navigate, projectHash } from '../router.js';
 import { openProjectModal } from './projects.js';
 import { openLogModal } from './logs.js';
-import { openSettleAdvanceModal, settleManpowerBaleAmount } from './bale.js';
+import { openSettleAdvanceModal, settleManpowerBaleAmount, reopenApprovedPayrollRun } from './bale.js';
 import { printPayrollRun } from './payrollPrint.js';
 import { ICONS } from '../icons.js';
 
@@ -932,7 +932,13 @@ async function paintManpower(el, project, initialWeek) {
       </tbody></table></div>
       <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
         ${editable ? `<button class="btn primary sm" id="pd-approve-payroll">${ICONS.check}Approve payroll</button><button class="btn ghost sm" id="pd-reopen-payroll">Send back to draft</button>` : ''}
-        ${run.status === 'approved' ? `<button class="btn sm" id="pd-print-payroll">${ICONS.print}Print payroll</button>` : ''}
+        ${
+          run.status === 'approved' && approver
+            ? `<button class="btn sm" id="pd-print-payroll">${ICONS.print}Print payroll</button><button class="btn ghost sm" id="pd-reopen-approved-payroll">Reopen (undo approval)</button>`
+            : run.status === 'approved'
+              ? `<button class="btn sm" id="pd-print-payroll">${ICONS.print}Print payroll</button>`
+              : ''
+        }
       </div>
     `;
 
@@ -964,7 +970,7 @@ async function paintManpower(el, project, initialWeek) {
           const shortfalls = [];
           for (const r of finalRows) {
             if (r.manpower_id != null && r.bale_deducted > 0) {
-              const applied = await settleManpowerBaleAmount(r.manpower_id, r.bale_deducted, currentUserId());
+              const applied = await settleManpowerBaleAmount(r.manpower_id, r.bale_deducted, currentUserId(), run.id);
               if (applied < r.bale_deducted - 0.005) shortfalls.push(`${r.full_name} (${fmtMoney(r.bale_deducted - applied)} short)`);
             }
           }
@@ -1002,6 +1008,29 @@ async function paintManpower(el, project, initialWeek) {
     if (run.status === 'approved') {
       const printBtn = document.getElementById('pd-print-payroll');
       if (printBtn) printBtn.addEventListener('click', () => printPayrollRun(run, project, memberName));
+
+      const reopenBtn = document.getElementById('pd-reopen-approved-payroll');
+      if (reopenBtn) {
+        reopenBtn.addEventListener('click', async () => {
+          if (
+            !confirm(
+              'Reopen this approved payroll? This reverses the bale deduction it applied and sends it back to draft, so it recomputes from current attendance/advances. The site engineer (or you) will need to review and re-submit it.'
+            )
+          )
+            return;
+          reopenBtn.disabled = true;
+          try {
+            await reopenApprovedPayrollRun(run);
+            toast('Payroll reopened — recomputing from current attendance.', 'ok');
+            await refreshPayroll();
+            await paintAdvancesList();
+          } catch (err) {
+            toast(err.message || 'Could not reopen payroll.', 'error');
+          } finally {
+            reopenBtn.disabled = false;
+          }
+        });
+      }
     }
   }
 
