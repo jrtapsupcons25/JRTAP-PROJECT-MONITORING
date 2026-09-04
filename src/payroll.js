@@ -128,6 +128,34 @@ export function centralizedBaleRows(manpowerTotals, manpowerList, workers, advan
 }
 
 /**
+ * All-time total salary (gross pay -- days present × daily rate, not netted
+ * against advances) earned on this project, grouped by position/trade,
+ * summed across every attendance record ever logged (not just this week).
+ * Includes inactive/removed workers too, since a historical total should
+ * still count work they actually did before leaving. Used by the project
+ * Overview tab's "Total salary by position" summary.
+ *
+ * A worker with no position typed in falls under "Unspecified" rather than
+ * being silently dropped, so the grand total always reconciles.
+ */
+export function totalSalaryByPosition(workers, attendance) {
+  const byPosition = new Map();
+  workers.forEach((w) => {
+    const position = (w.trade || '').trim() || 'Unspecified';
+    const daysPresent = attendance
+      .filter((a) => a.worker_id === w.id)
+      .reduce((sum, a) => sum + (a.status === 'full' ? 1 : a.status === 'half' ? 0.5 : 0), 0);
+    const gross = daysPresent * (Number(w.daily_rate) || 0);
+    byPosition.set(position, (byPosition.get(position) || 0) + gross);
+  });
+  const rows = [...byPosition.entries()]
+    .map(([position, total]) => ({ position, total }))
+    .sort((a, b) => b.total - a.total);
+  const grandTotal = rows.reduce((sum, r) => sum + r.total, 0);
+  return { rows, grandTotal };
+}
+
+/**
  * How much bale has already been confirmed/deducted for one manpower person
  * during a given payroll week (Monday–Saturday), from the settlement ledger.
  * Bucketed by calendar date the same way advancesTotal is, so "this week"

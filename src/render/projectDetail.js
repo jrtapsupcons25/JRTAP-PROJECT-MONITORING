@@ -49,7 +49,7 @@ import {
   updatePayrollRun,
   deletePayrollRun,
 } from '../data.js';
-import { weeklyPayrollForWorkers, remainingBale, settledThisWeek } from '../payroll.js';
+import { weeklyPayrollForWorkers, remainingBale, settledThisWeek, totalSalaryByPosition } from '../payroll.js';
 import { scheduleStatus } from '../progress.js';
 import { buildProgressChart } from './progressChart.js';
 import { navigate, projectHash } from '../router.js';
@@ -171,9 +171,31 @@ function pettyCashSummaryHTML(totals) {
 }
 
 /* ==================== OVERVIEW ==================== */
+// Actual cost of materials that have come INTO the project, all-time.
+// siteops.direct_materials is the single record of every incoming delivery
+// -- both movements logged straight on the Materials tab AND the ones
+// auto-inserted the moment a material request is marked "received" (see
+// fn_log_received_material_movement) land in the same table, so summing
+// this one table (direction = 'in') covers both paths without double
+// counting. A row logged without a unit cost/quantity (both are optional
+// on the direct log) just doesn't contribute -- callers should also check
+// `incomplete` so the total isn't silently mistaken for exhaustive.
+function incomingMaterialsCost(directMaterials) {
+  const incoming = directMaterials.filter((m) => m.direction === 'in');
+  let total = 0;
+  let incomplete = 0;
+  incoming.forEach((m) => {
+    const qty = m.quantity == null ? null : Number(m.quantity);
+    const cost = m.unit_cost == null ? null : Number(m.unit_cost);
+    if (qty != null && cost != null) total += qty * cost;
+    else incomplete += 1;
+  });
+  return { total, incomplete };
+}
+
 async function paintOverview(el, project) {
   const approver = isApprover();
-  const [materials, pettycash, workers, attendance, advances, assignments, progressUpdates, expenses] = await Promise.all([
+  const [materials, pettycash, workers, attendance, advances, assignments, progressUpdates, expenses, directMaterials] = await Promise.all([
     fetchMaterialRequests({ projectId: project.id }),
     fetchPettyCashRequests({ projectId: project.id }),
     fetchWorkers(project.id),
@@ -182,19 +204,30 @@ async function paintOverview(el, project) {
     approver ? fetchProjectAssignments(project.id) : Promise.resolve([]),
     fetchProgressUpdates(project.id),
     fetchDirectExpenses(project.id),
+    fetchDirectMaterials(project.id),
   ]);
   const pendingCount = materials.filter((m) => m.status === 'pending').length + pettycash.filter((p) => p.status === 'pending').length;
   const monday = mondayOf(todayISO());
   const { totals } = weeklyPayrollForWorkers(workers.filter((w) => w.active !== false), attendance, advances, monday);
   const pcTotals = pettyCashTotals(pettycash, expenses);
+  // All-time (not just this week), so it includes every worker who has ever
+  // logged attendance here, even one since deactivated/removed.
+  const salaryByPosition = totalSalaryByPosition(workers, attendance);
+  const materialsCost = incomingMaterialsCost(directMaterials);
 
   el.innerHTML = `
     <div class="stat-grid section">
       <div class="stat"><div class="v num">${pendingCount}</div><div class="l">Pending approvals</div></div>
       <div class="stat"><div class="v num">${workers.filter((w) => w.active !== false).length}</div><div class="l">Active workers</div></div>
       <div class="stat accent"><div class="v num">${fmtMoney(totals.net)}</div><div class="l">This week's payroll</div></div>
+      <div class="stat"><div class="v num">${fmtMoney(materialsCost.total)}</div><div class="l">Materials cost (incoming, all-time)</div></div>
       <div class="stat"><div class="v num">${project.budget ? fmtMoney(project.budget) : '—'}</div><div class="l">Budget</div></div>
     </div>
+    ${
+      materialsCost.incomplete > 0
+        ? `<div class="hint" style="margin:-10px 0 14px;">${materialsCost.incomplete} incoming material ${materialsCost.incomplete === 1 ? 'entry is' : 'entries are'} missing a quantity or unit cost and ${materialsCost.incomplete === 1 ? "isn't" : "aren't"} included in the total above &mdash; check the Materials tab.</div>`
+        : ''
+    }
     <div class="section-head"><h2>Project details</h2></div>
     <div class="card card-pad">
       <div class="kv-list">
@@ -207,6 +240,7 @@ async function paintOverview(el, project) {
       </div>
       ${project.notes ? `<div class="sub-h" style="margin-top:14px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-dim); font-weight:700;">Notes</div><div>${esc(project.notes)}</div>` : ''}
     </div>
+    ${salaryByPositionSectionHTML(salaryByPosition)}
     ${pettyCashSummaryHTML(pcTotals)}
     ${accomplishmentSectionHTML(project, progressUpdates)}
     ${approver ? assignedTeamSectionHTML(assignments) : ''}
@@ -219,6 +253,24 @@ async function paintOverview(el, project) {
       openAssignTeamModal(project, assignments, () => paintOverview(el, project))
     );
   }
+}
+
+/* ==================== TOTAL SALARY BY POSITION (all-time) ==================== */
+function salaryByPositionSectionHTML(salaryByPosition) {
+  const { rows, grandTotal } = salaryByPosition;
+  return `
+    <div class="section-head"><h2>Total salary by position</h2></div>
+    <div class="table-wrap card">
+      ${
+        rows.length === 0
+          ? `<div class="empty" style="padding:16px;">${ICONS.empty}<div class="lead">No workers logged yet</div>Add workers on the Manpower &amp; Payroll tab and mark attendance to see totals here.</div>`
+          : `<table><thead><tr><th>Position</th><th>Total salary (all time)</th></tr></thead><tbody>
+              ${rows.map((r) => `<tr><td>${esc(r.position)}</td><td class="num"><b>${fmtMoney(r.total)}</b></td></tr>`).join('')}
+              <tr><td><b>Total</b></td><td class="num"><b>${fmtMoney(grandTotal)}</b></td></tr>
+            </tbody></table>`
+      }
+    </div>
+  `;
 }
 
 /* ==================== ACCOMPLISHMENT (planned vs actual S-curve) ==================== */
