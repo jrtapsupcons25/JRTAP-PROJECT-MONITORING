@@ -43,19 +43,36 @@ export function todayISO() {
   return local.toISOString().slice(0, 10);
 }
 
+// All calendar-day arithmetic below is done in UTC on a date built from the
+// y/m/d parts of the ISO string, never via `new Date(iso + 'T00:00:00')` +
+// `.toISOString()`. That older pattern parses as LOCAL midnight but reads
+// back out via UTC, so anyone in a positive-UTC-offset timezone (e.g. the
+// Philippines, UTC+8) silently loses a day on every conversion -- caught via
+// a screenshot showing a "Mon-Sat" week rendered as "Aug 23-27" when it
+// should have been "Aug 24-29". Building the Date with Date.UTC(y, m-1, d)
+// and reading/writing only the UTC getters/setters sidesteps local timezone
+// entirely, so the calendar math is exact regardless of where the browser is.
+function isoToUTCDate(isoDate) {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+function utcDateToISO(date) {
+  return date.toISOString().slice(0, 10);
+}
+
 // Monday of the week containing the given ISO date string (yyyy-mm-dd).
 export function mondayOf(isoDate) {
-  const d = new Date(isoDate + 'T00:00:00');
-  const day = d.getDay(); // 0=Sun..6=Sat
+  const d = isoToUTCDate(isoDate);
+  const day = d.getUTCDay(); // 0=Sun..6=Sat
   const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return d.toISOString().slice(0, 10);
+  d.setUTCDate(d.getUTCDate() + diff);
+  return utcDateToISO(d);
 }
 
 export function addDaysISO(isoDate, days) {
-  const d = new Date(isoDate + 'T00:00:00');
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  const d = isoToUTCDate(isoDate);
+  d.setUTCDate(d.getUTCDate() + days);
+  return utcDateToISO(d);
 }
 
 // The work/payroll week is Monday-Saturday (6 days) -- Sunday is not a

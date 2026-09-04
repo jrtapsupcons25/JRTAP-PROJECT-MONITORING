@@ -1,6 +1,6 @@
 import { state, isApprover, currentUserId } from '../state.js';
 import { setPageTitle, setTopbarActions } from './shell.js';
-import { esc, fmtMoney, fmtDate, pillClass, mondayOf, todayISO, weekRangeLabel } from '../utils.js';
+import { esc, fmtMoney, fmtDate, pillClass, mondayOf, todayISO, weekRangeLabel, addDaysISO } from '../utils.js';
 import {
   fetchProjects,
   fetchMaterialRequests,
@@ -252,9 +252,8 @@ export async function renderDashboard() {
 function isThisWeek(dateStr) {
   if (!dateStr) return false;
   const monday = mondayOf(todayISO());
-  const sunday = new Date(monday + 'T00:00:00');
-  sunday.setDate(sunday.getDate() + 6);
-  return dateStr >= monday && dateStr <= sunday.toISOString().slice(0, 10);
+  const sunday = addDaysISO(monday, 6);
+  return dateStr >= monday && dateStr <= sunday;
 }
 
 function emptyBlock(msg) {
