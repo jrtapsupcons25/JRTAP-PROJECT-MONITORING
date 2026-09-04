@@ -7,7 +7,9 @@ import { esc, fmtMoney, fmtDate, toast, openModal, closeModal } from '../utils.j
 import {
   fetchAdvances,
   fetchProjects,
+  fetchManpower,
   updateAdvance,
+  updateManpower,
   createBaleSettlement,
   fetchBaleSettlementsForRun,
   deleteBaleSettlement,
@@ -59,6 +61,51 @@ export function openSettleAdvanceModal(advance, workerLabel, onSaved) {
       await onSaved();
     } catch (err) {
       toast(err.message || 'Could not update bale.', 'error');
+    }
+  });
+}
+
+// Settles (fully or partially) bale a manpower person already owed BEFORE
+// being registered here — not tied to any project/advance, since a
+// not-yet-deployed registrant has no project worker row to log an advance
+// against. Mirrors openSettleAdvanceModal above, but writes to
+// manpower.starting_bale_settled instead of an advances row, and logs a
+// bale_settlements row with advance_id left null (still shows up in the
+// ledger, just not attributable to a specific project advance).
+export function openSettleStartingBaleModal(manpowerEntry, onSaved) {
+  const remaining = Math.max(0, (Number(manpowerEntry.starting_bale) || 0) - (Number(manpowerEntry.starting_bale_settled) || 0));
+  openModal(`
+    <div class="modal-overlay" id="modal-settle-starting-bale">
+      <div class="modal">
+        <div class="modal-head"><h2>Settle starting bale &mdash; ${esc(manpowerEntry.full_name)}</h2><button class="btn ghost" data-close-modal>${ICONS.close}</button></div>
+        <form id="form-settle-starting-bale">
+          <div class="modal-body">
+            <div class="hint" style="margin-bottom:10px;">Bale ${esc(manpowerEntry.full_name)} already owed before being registered here (not tied to a project). Remaining: <b>${fmtMoney(remaining)}</b> of ${fmtMoney(manpowerEntry.starting_bale)}.</div>
+            <div class="field"><label for="ssb-amount">Amount being settled now (&#8369;)</label><input type="number" id="ssb-amount" min="0" max="${remaining}" step="0.01" required value="${remaining}"></div>
+          </div>
+          <div class="modal-foot"><button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn primary">Save</button></div>
+        </form>
+      </div>
+    </div>
+  `);
+  document.getElementById('form-settle-starting-bale').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const amountNow = Number(document.getElementById('ssb-amount').value);
+    if (amountNow <= 0 || amountNow > remaining) return toast(`Enter an amount between 0 and ${fmtMoney(remaining)}.`, 'error');
+    try {
+      await updateManpower(manpowerEntry.id, { starting_bale_settled: Number(manpowerEntry.starting_bale_settled || 0) + amountNow });
+      await createBaleSettlement({
+        manpower_id: manpowerEntry.id,
+        advance_id: null,
+        amount: amountNow,
+        settled_by: currentUserId(),
+        note: 'Starting bale (before registration)',
+      });
+      toast('Starting bale updated.', 'ok');
+      closeModal();
+      await onSaved();
+    } catch (err) {
+      toast(err.message || 'Could not update starting bale.', 'error');
     }
   });
 }
@@ -153,8 +200,12 @@ export async function reopenApprovedPayrollRun(run) {
 }
 
 export async function openManpowerBaleModal(manpowerId, displayName, onSaved) {
-  const [advances, projects] = await Promise.all([fetchAdvances(), fetchProjects()]);
+  const [advances, projects, manpowerList] = await Promise.all([fetchAdvances(), fetchProjects(), fetchManpower()]);
   const projectName = (id) => projects.find((p) => p.id === id)?.name || `#${id}`;
+  const manpowerEntry = manpowerList.find((m) => m.id === manpowerId);
+  const startingRemaining = manpowerEntry
+    ? Math.max(0, (Number(manpowerEntry.starting_bale) || 0) - (Number(manpowerEntry.starting_bale_settled) || 0))
+    : 0;
   const rows = advances
     .filter((a) => a.manpower_id === manpowerId)
     .map((a) => ({ advance: a, remaining: remainingBale(a) }))
@@ -167,9 +218,19 @@ export async function openManpowerBaleModal(manpowerId, displayName, onSaved) {
         <div class="modal-head"><h2>Outstanding bale &mdash; ${esc(displayName)}</h2><button class="btn ghost" data-close-modal>${ICONS.close}</button></div>
         <div class="modal-body">
           ${
-            rows.length === 0
+            rows.length === 0 && startingRemaining <= 0
               ? `<div class="hint">No outstanding bale visible from here. It may be logged under a project this account doesn't have access to &mdash; an Owner/Admin can settle it from that project's Cash advances list.</div>`
               : `<div class="table-wrap"><table><thead><tr><th>Project</th><th>Date given</th><th>Remaining</th><th></th></tr></thead><tbody>
+                  ${
+                    startingRemaining > 0
+                      ? `<tr>
+                        <td><i>Before registration</i></td>
+                        <td>&mdash;</td>
+                        <td class="num"><b>${fmtMoney(startingRemaining)}</b></td>
+                        <td><button class="btn sm" data-settle-starting>Settle</button></td>
+                      </tr>`
+                      : ''
+                  }
                   ${rows
                     .map(
                       ({ advance, remaining }) => `<tr>
@@ -198,4 +259,13 @@ export async function openManpowerBaleModal(manpowerId, displayName, onSaved) {
       });
     });
   });
+  const settleStartingBtn = document.querySelector('[data-settle-starting]');
+  if (settleStartingBtn && manpowerEntry) {
+    settleStartingBtn.addEventListener('click', () => {
+      openSettleStartingBaleModal(manpowerEntry, async () => {
+        await onSaved();
+        await openManpowerBaleModal(manpowerId, displayName, onSaved);
+      });
+    });
+  }
 }

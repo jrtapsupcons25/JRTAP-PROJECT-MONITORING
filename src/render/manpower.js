@@ -8,6 +8,14 @@ import { esc, fmtMoney, toast, openModal, closeModal } from '../utils.js';
 import { fetchManpower, createManpower, updateManpower } from '../data.js';
 import { currentUserId } from '../state.js';
 import { ICONS } from '../icons.js';
+import { openSettleStartingBaleModal } from './bale.js';
+
+// Remaining on a person's pre-registration ("starting") bale -- see the
+// column comment on siteops.manpower.starting_bale for why this exists
+// separately from siteops.advances.
+function startingBaleRemaining(m) {
+  return Math.max(0, (Number(m.starting_bale) || 0) - (Number(m.starting_bale_settled) || 0));
+}
 
 export async function renderManpower() {
   setPageTitle('People', 'Manpower');
@@ -27,17 +35,27 @@ async function paintList() {
   content.innerHTML = rows.length === 0
     ? `<div class="card empty">${ICONS.team}<div class="lead">No manpower registered yet</div>Register workers here so Site Supervisors can pick them into a project's roster by name &mdash; no re-typing position or rate per project.</div>`
     : `<div class="table-wrap card"><table><thead><tr>
-        <th>Name</th><th>Address</th><th>Position</th><th>Rate</th><th>Contact no.</th><th>Contact person</th><th>Status</th><th></th>
+        <th>Name</th><th>Address</th><th>Position</th><th>Rate</th><th>Contact no.</th><th>Contact person</th><th>Starting bale</th><th>Status</th><th></th>
       </tr></thead><tbody>
         ${rows
-          .map(
-            (m) => `<tr>
+          .map((m) => {
+            const remaining = startingBaleRemaining(m);
+            return `<tr>
               <td>${esc(m.full_name)}</td>
               <td>${esc(m.address || '—')}</td>
               <td>${esc(m.job_position || '—')}</td>
               <td class="num">${m.daily_rate ? fmtMoney(m.daily_rate) : '—'}</td>
               <td>${esc(m.contact_no || '—')}</td>
               <td>${esc(m.contact_person || '—')}</td>
+              <td class="num">
+                ${
+                  Number(m.starting_bale) > 0
+                    ? `<b>${fmtMoney(remaining)}</b>${remaining > 0 ? ` of ${fmtMoney(m.starting_bale)}` : ' (settled)'}${
+                        remaining > 0 ? `<br><button class="btn sm" data-settle-starting-bale="${m.id}">Settle</button>` : ''
+                      }`
+                    : '—'
+                }
+              </td>
               <td><span class="pill ${m.active === false ? 'inactive' : 'approved'}">${m.active === false ? 'Inactive' : 'Active'}</span></td>
               <td>
                 <div class="row-actions">
@@ -45,8 +63,8 @@ async function paintList() {
                   <button class="btn sm" data-toggle-manpower="${m.id}" data-next="${m.active === false ? 'true' : 'false'}">${m.active === false ? 'Reactivate' : 'Deactivate'}</button>
                 </div>
               </td>
-            </tr>`
-          )
+            </tr>`;
+          })
           .join('')}
       </tbody></table></div>`;
 
@@ -62,6 +80,13 @@ async function paintList() {
       } catch (err) {
         toast(err.message || 'Could not update manpower.', 'error');
       }
+    });
+  });
+  content.querySelectorAll('[data-settle-starting-bale]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const m = rows.find((row) => String(row.id) === btn.dataset.settleStartingBale);
+      if (!m) return;
+      openSettleStartingBaleModal(m, () => paintList());
     });
   });
 }
@@ -84,6 +109,15 @@ function openManpowerModal(entry) {
               <div class="field"><label for="mp-contact-no">Contact no.</label><input type="text" id="mp-contact-no" maxlength="40" value="${esc(entry?.contact_no || '')}"></div>
               <div class="field"><label for="mp-contact-person">Contact person</label><input type="text" id="mp-contact-person" maxlength="80" value="${esc(entry?.contact_person || '')}" placeholder="In case of emergency"></div>
             </div>
+            <div class="field">
+              <label for="mp-starting-bale">Starting bale (&#8369;) &mdash; existing bale from before registering, if any</label>
+              <input type="number" id="mp-starting-bale" min="0" step="0.01" value="${entry?.starting_bale ?? 0}">
+              ${
+                isEdit && Number(entry?.starting_bale_settled) > 0
+                  ? `<div class="hint">${fmtMoney(entry.starting_bale_settled)} of this has already been settled &mdash; lowering the amount below that won't undo a settlement, it only corrects the original figure.</div>`
+                  : `<div class="hint">Only for a worker who already owed bale before you registered them here (not yet deployed to a project, so it can't be logged as a project advance). Leave at 0 if none.</div>`
+              }
+            </div>
             ${isEdit ? `<div class="field"><label for="mp-active">Status</label><select id="mp-active"><option value="true" ${entry.active !== false ? 'selected' : ''}>Active</option><option value="false" ${entry.active === false ? 'selected' : ''}>Inactive</option></select></div>` : ''}
           </div>
           <div class="modal-foot"><button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn primary">${isEdit ? 'Save changes' : 'Register'}</button></div>
@@ -100,6 +134,7 @@ function openManpowerModal(entry) {
       daily_rate: document.getElementById('mp-rate').value === '' ? null : Number(document.getElementById('mp-rate').value),
       contact_no: document.getElementById('mp-contact-no').value.trim() || null,
       contact_person: document.getElementById('mp-contact-person').value.trim() || null,
+      starting_bale: document.getElementById('mp-starting-bale').value === '' ? 0 : Number(document.getElementById('mp-starting-bale').value),
     };
     if (isEdit) fields.active = document.getElementById('mp-active').value === 'true';
     else fields.created_by = currentUserId();
