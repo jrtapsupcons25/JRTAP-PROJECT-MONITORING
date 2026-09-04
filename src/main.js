@@ -15,6 +15,7 @@ import { renderPettyCash } from './render/pettycash.js';
 import { renderLogs } from './render/logs.js';
 import { renderTeam } from './render/team.js';
 import { renderManpower } from './render/manpower.js';
+import { renderEquipment } from './render/equipment.js';
 import { isApprover } from './state.js';
 
 document.getElementById('app').innerHTML = `
@@ -101,6 +102,7 @@ async function renderRoute(route) {
     else if (route.name === 'materials') await renderMaterials();
     else if (route.name === 'pettycash') await renderPettyCash();
     else if (route.name === 'logs') await renderLogs();
+    else if (route.name === 'equipment') await renderEquipment();
     else if (route.name === 'team') {
       if (!approver) {
         window.location.hash = 'dashboard';
@@ -143,6 +145,9 @@ function setupRealtime() {
     'direct_expenses',
     'progress_updates',
     'manpower',
+    'equipment',
+    'equipment_requests',
+    'equipment_transfers',
   ];
   let channel = supabase.channel('siteops-live');
   tables.forEach((table) => {

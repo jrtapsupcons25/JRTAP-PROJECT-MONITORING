@@ -116,13 +116,20 @@ export function closeModal() {
 
 // ---------- repeatable item-row helper (material line items) ----------
 // columns: [{key,type,placeholder,step}] typically [item_name, quantity, unit]
-export function repeaterRow(idx, values = {}) {
+// `datalistId`, when given, wires the item-name input to an HTML <datalist>
+// (e.g. the JRTAP shop's product list) so typed text can suggest/autofill a
+// known name; a `.hint` line underneath is left for the caller to fill in
+// (e.g. live shop-stock feedback) via `data-rep-hint`.
+export function repeaterRow(idx, values = {}, datalistId) {
   return `
-    <div class="rep-row" data-rep-row="${idx}">
-      <input class="rep-input" type="text" data-rep="item_name" placeholder="Item" value="${esc(values.item_name || '')}">
-      <input class="rep-input" type="number" min="0" step="0.01" data-rep="quantity" placeholder="Qty" value="${esc(values.quantity ?? '')}">
-      <input class="rep-input" type="text" data-rep="unit" placeholder="Unit" value="${esc(values.unit || '')}">
-      <button type="button" class="rep-remove" data-rep-remove="${idx}" title="Remove">&times;</button>
+    <div class="rep-row-wrap" data-rep-row="${idx}">
+      <div class="rep-row">
+        <input class="rep-input" type="text" data-rep="item_name" placeholder="Item" value="${esc(values.item_name || '')}" ${datalistId ? `list="${esc(datalistId)}" autocomplete="off"` : ''}>
+        <input class="rep-input" type="number" min="0" step="0.01" data-rep="quantity" placeholder="Qty" value="${esc(values.quantity ?? '')}">
+        <input class="rep-input" type="text" data-rep="unit" placeholder="Unit" value="${esc(values.unit || '')}">
+        <button type="button" class="rep-remove" data-rep-remove="${idx}" title="Remove">&times;</button>
+      </div>
+      <div class="hint" data-rep-hint></div>
     </div>`;
 }
 
@@ -139,11 +146,11 @@ export function readRepeaterRows(container) {
   return rows;
 }
 
-export function wireRepeater(container, addBtn, initialCount = 1) {
+export function wireRepeater(container, addBtn, initialCount = 1, datalistId) {
   let idx = 0;
   function add(values) {
     const div = document.createElement('div');
-    div.innerHTML = repeaterRow(idx, values);
+    div.innerHTML = repeaterRow(idx, values, datalistId);
     const row = div.firstElementChild;
     container.appendChild(row);
     row.querySelector('[data-rep-remove]').addEventListener('click', () => row.remove());

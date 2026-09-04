@@ -90,6 +90,28 @@ export async function fetchPendingPayrollRuns() {
   );
 }
 
+/* ---------------- shop products (read-only, from the JRTAP POS system) ---------------- */
+// Products live in the POS's own `public` schema, not `siteops` -- so this
+// goes through the raw `supabase` client (default schema `public`), not
+// `db`. Read access for any active Site Ops member is granted by the
+// additive `products_siteops_read` RLS policy on public.products (separate
+// from, and without touching, POS's own admin-only policies). Used to (a)
+// keep material-request item names in sync with the shop's real product
+// names via a dropdown, and (b) show live stock so an Admin can judge
+// sufficiency before approving, and a Site Engineer can see it upfront too.
+export async function fetchShopProducts() {
+  const { data, error } = await supabase
+    .from('products')
+    .select('id,name,unit,stock,cost,srp,category')
+    .eq('active', true)
+    .order('name', { ascending: true });
+  if (error) {
+    console.error('fetchShopProducts', error);
+    return [];
+  }
+  return data || [];
+}
+
 /* ---------------- material requests ---------------- */
 export async function fetchMaterialRequests(filter = {}) {
   let q = db.from('material_requests').select('*').order('created_at', { ascending: false });
@@ -115,6 +137,88 @@ export async function receiveMaterialRequest(id, receivedBy) {
       .select()
       .single(),
     'receiveMaterialRequest'
+  );
+}
+
+/* ---------------- equipment (power tools & equipment inventory) ---------------- */
+// Company-wide registry, same pattern as manpower: Owner/Admin manage the
+// master list, any active member can read it (fetchEquipment). Its
+// current_project_id/current_holder_id/condition are only ever changed by
+// the two SECURITY DEFINER triggers below (on a request being received, or
+// a transfer being accepted) -- never written directly by the frontend.
+export async function fetchEquipment(filter = {}) {
+  let q = db.from('equipment').select('*').order('name', { ascending: true });
+  if (filter.activeOnly) q = q.eq('active', true);
+  return must(await q, 'fetchEquipment');
+}
+export async function createEquipment(fields) {
+  return must(await db.from('equipment').insert(fields).select().single(), 'createEquipment');
+}
+export async function updateEquipment(id, patch) {
+  return must(await db.from('equipment').update(patch).eq('id', id).select().single(), 'updateEquipment');
+}
+
+// A project requesting a specific registered piece of equipment.
+export async function fetchEquipmentRequests(filter = {}) {
+  let q = db.from('equipment_requests').select('*').order('created_at', { ascending: false });
+  if (filter.projectId) q = q.eq('project_id', filter.projectId);
+  return must(await q, 'fetchEquipmentRequests');
+}
+export async function createEquipmentRequest(fields) {
+  return must(await db.from('equipment_requests').insert(fields).select().single(), 'createEquipmentRequest');
+}
+export async function decideEquipmentRequest(id, patch) {
+  return must(await db.from('equipment_requests').update(patch).eq('id', id).select().single(), 'decideEquipmentRequest');
+}
+// Site-side confirmation that an approved equipment request actually
+// arrived, plus the condition it arrived in — gated by its own RLS policy
+// (equipment_requests_receive) so any account with project access can
+// confirm, not just an admin. The DB trigger then moves the equipment's
+// current_project_id/current_holder_id/condition to match.
+export async function receiveEquipmentRequest(id, receivedBy, receivedCondition) {
+  return must(
+    await db
+      .from('equipment_requests')
+      .update({
+        status: 'received',
+        received_by: receivedBy,
+        received_at: new Date().toISOString(),
+        received_condition: receivedCondition,
+      })
+      .eq('id', id)
+      .select()
+      .single(),
+    'receiveEquipmentRequest'
+  );
+}
+
+// Site-to-site handoff of already-deployed equipment — no Admin approval
+// gate; the current holder's project initiates, the destination project's
+// team accepts. A DB trigger rejects an insert whose from_project_id
+// doesn't match where the equipment actually is right now.
+export async function fetchEquipmentTransfers(filter = {}) {
+  let q = db.from('equipment_transfers').select('*').order('initiated_at', { ascending: false });
+  if (filter.status) q = q.eq('status', filter.status);
+  return must(await q, 'fetchEquipmentTransfers');
+}
+export async function createEquipmentTransfer(fields) {
+  return must(await db.from('equipment_transfers').insert(fields).select().single(), 'createEquipmentTransfer');
+}
+export async function acceptEquipmentTransfer(id, acceptedBy) {
+  return must(
+    await db
+      .from('equipment_transfers')
+      .update({ status: 'accepted', accepted_by: acceptedBy, accepted_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single(),
+    'acceptEquipmentTransfer'
+  );
+}
+export async function cancelEquipmentTransfer(id) {
+  return must(
+    await db.from('equipment_transfers').update({ status: 'cancelled' }).eq('id', id).select().single(),
+    'cancelEquipmentTransfer'
   );
 }
 
@@ -261,4 +365,35 @@ export async function getPhotoSignedUrl(path) {
     return null;
   }
   return data?.signedUrl || null;
+}
+
+/* ---------------- storage (equipment photos) ---------------- */
+// Separate bucket from daily-log photos: equipment isn't project-scoped, so
+// there's no project_id to fold into the path/RLS the way siteops-photos
+// does. Read is open to any active member (the whole point is everyone can
+// SEE the photo to identify a tool); write is Owner/Admin-only, matching who
+// can otherwise edit the equipment registry.
+const EQUIPMENT_PHOTO_BUCKET = 'siteops-equipment-photos';
+
+export async function uploadEquipmentPhoto(file) {
+  const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name}`;
+  const { error } = await supabase.storage.from(EQUIPMENT_PHOTO_BUCKET).upload(path, file);
+  if (error) throw new Error(error.message || 'Photo upload failed');
+  return path;
+}
+
+export async function getEquipmentPhotoSignedUrl(path) {
+  if (!path) return null;
+  const { data, error } = await supabase.storage.from(EQUIPMENT_PHOTO_BUCKET).createSignedUrl(path, 3600);
+  if (error) {
+    console.error('getEquipmentPhotoSignedUrl', error);
+    return null;
+  }
+  return data?.signedUrl || null;
+}
+
+export async function deleteEquipmentPhoto(path) {
+  if (!path) return;
+  const { error } = await supabase.storage.from(EQUIPMENT_PHOTO_BUCKET).remove([path]);
+  if (error) console.error('deleteEquipmentPhoto', error);
 }

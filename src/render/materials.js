@@ -8,10 +8,21 @@ import {
   decideMaterialRequest,
   receiveMaterialRequest,
   fetchTeamMembers,
+  fetchShopProducts,
 } from '../data.js';
 import { ICONS } from '../icons.js';
 
 let selectedProjectId = '';
+
+// Case-insensitive exact-name match against the shop's product list -- used
+// both to resolve a typed item name to a product_id on submit, and to look
+// up a request's linked (or name-matched, for legacy rows) product for the
+// stock/cost display in the decision modal.
+function findShopProduct(products, name) {
+  if (!name) return null;
+  const needle = String(name).trim().toLowerCase();
+  return products.find((p) => String(p.name).trim().toLowerCase() === needle) || null;
+}
 
 export async function renderMaterials() {
   setPageTitle('Requests & approvals', 'Material Requests');
@@ -91,8 +102,11 @@ async function paintList() {
   });
 }
 
-export function openMaterialModal(defaultProjectId, onSaved) {
+export async function openMaterialModal(defaultProjectId, onSaved) {
   const projects = state.projects;
+  const shopProducts = await fetchShopProducts();
+  const datalistId = 'shop-products-list';
+
   openModal(`
     <div class="modal-overlay" id="modal-material">
       <div class="modal wide">
@@ -107,6 +121,7 @@ export function openMaterialModal(defaultProjectId, onSaved) {
             </div>
             <div class="field">
               <label>Items needed</label>
+              <div class="hint" style="margin-bottom:6px;">Start typing to pick a name from the JRTAP shop's product list (so it matches exactly), or type your own for something bought from an outside supplier.</div>
               <div class="rep-block"><div id="m-items"></div>
                 <button type="button" class="btn sm ghost" id="m-items-add" style="margin-top:6px;">+ Add item</button>
               </div>
@@ -117,9 +132,34 @@ export function openMaterialModal(defaultProjectId, onSaved) {
         </form>
       </div>
     </div>
+    <datalist id="${datalistId}">
+      ${shopProducts.map((p) => `<option value="${esc(p.name)}"></option>`).join('')}
+    </datalist>
   `);
   const itemsContainer = document.getElementById('m-items');
-  wireRepeater(itemsContainer, document.getElementById('m-items-add'), 1);
+  wireRepeater(itemsContainer, document.getElementById('m-items-add'), 1, datalistId);
+
+  function refreshRowHint(row) {
+    const nameInput = row.querySelector('[data-rep="item_name"]');
+    const unitInput = row.querySelector('[data-rep="unit"]');
+    const hintEl = row.querySelector('[data-rep-hint]');
+    const typed = nameInput.value.trim();
+    const match = findShopProduct(shopProducts, typed);
+    if (!typed) {
+      hintEl.textContent = '';
+    } else if (match) {
+      hintEl.textContent = `In shop stock: ${match.stock} ${match.unit || ''}`.trim();
+      if (!unitInput.value.trim() && match.unit) unitInput.value = match.unit;
+    } else {
+      hintEl.textContent = 'Not in shop catalog — will be sourced from an outside supplier.';
+    }
+  }
+  // Event delegation so this also covers rows added later via "+ Add item".
+  itemsContainer.addEventListener('input', (e) => {
+    if (e.target.matches('[data-rep="item_name"]')) {
+      refreshRowHint(e.target.closest('[data-rep-row]'));
+    }
+  });
 
   document.getElementById('form-material').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -129,14 +169,18 @@ export function openMaterialModal(defaultProjectId, onSaved) {
     if (!project_id) return toast('Select a project.', 'error');
     if (items.length === 0) return toast('Add at least one item.', 'error');
     const uid = currentUserId();
-    const payload = items.map((it) => ({
-      project_id,
-      requested_by: uid,
-      item_name: it.item_name,
-      quantity: it.quantity,
-      unit: it.unit,
-      notes,
-    }));
+    const payload = items.map((it) => {
+      const match = findShopProduct(shopProducts, it.item_name);
+      return {
+        project_id,
+        requested_by: uid,
+        item_name: match ? match.name : it.item_name,
+        quantity: it.quantity,
+        unit: it.unit || (match ? match.unit : null),
+        notes,
+        product_id: match ? match.id : null,
+      };
+    });
     try {
       for (const row of payload) await createMaterialRequest(row);
       toast('Material request submitted.', 'ok');
@@ -148,10 +192,22 @@ export function openMaterialModal(defaultProjectId, onSaved) {
   });
 }
 
-function openDecisionModal(req) {
+async function openDecisionModal(req) {
   if (!req) return;
   const projectName = state.projects.find((p) => p.id === req.project_id)?.name || `#${req.project_id}`;
   const memberName = state.teamMembers.find((m) => m.id === req.requested_by)?.full_name || '—';
+
+  const shopProducts = await fetchShopProducts();
+  const product = req.product_id
+    ? shopProducts.find((p) => p.id === req.product_id)
+    : findShopProduct(shopProducts, req.item_name); // legacy rows requested before shop-linking existed
+  const requestedQty = Number(req.quantity) || 0;
+  const stockWarning = product && requestedQty > Number(product.stock)
+    ? `<div class="hint" style="color:var(--red,#c81e22);">Only ${product.stock} ${product.unit || ''} in shop stock — less than the ${requestedQty} requested.</div>`
+    : product
+      ? `<div class="hint">In shop stock: ${product.stock} ${product.unit || ''}</div>`
+      : `<div class="hint">Not in the shop catalog — sourced from an outside supplier.</div>`;
+
   openModal(`
     <div class="modal-overlay" id="modal-decision">
       <div class="modal">
@@ -160,11 +216,12 @@ function openDecisionModal(req) {
           <div class="info-panel" style="margin-bottom:14px;">
             <h3>${esc(req.item_name)}</h3>
             <div>Qty: <b>${esc(req.quantity ?? '—')} ${esc(req.unit || '')}</b></div>
+            ${stockWarning}
             <div>Project: <b>${esc(projectName)}</b></div>
             <div>Requested by: <b>${esc(memberName)}</b> on ${fmtDateTime(req.created_at)}</div>
             ${req.notes ? `<div>Notes: ${esc(req.notes)}</div>` : ''}
           </div>
-          <div class="field"><label for="decision-unit-cost">Unit cost (&#8369;, optional)</label><input type="number" id="decision-unit-cost" min="0" step="0.01" value="${req.unit_cost ?? ''}" placeholder="Price agreed with supplier"></div>
+          <div class="field"><label for="decision-unit-cost">Unit cost (&#8369;, optional)</label><input type="number" id="decision-unit-cost" min="0" step="0.01" value="${req.unit_cost ?? (product ? product.cost : '')}" placeholder="Price agreed with supplier"></div>
           <div class="field"><label for="decision-comment">Comment (optional)</label><textarea id="decision-comment" maxlength="300"></textarea></div>
         </div>
         <div class="modal-foot">
