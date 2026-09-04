@@ -40,6 +40,20 @@ const CONDITION_LABEL = { functional: 'Functional', for_repair: 'For repair', fo
 
 let cache = { equipment: [], requests: [], transfers: [], photoUrls: new Map() };
 
+// Inventory search/filter state -- client-side only, same pattern as the
+// Manpower registry (manpower.js): filtering re-slices the already-fetched
+// `cache.equipment` and re-renders just the table, no network round trip
+// per keystroke. The filter bar itself (search box + selects) is rendered
+// once per real data refresh (paintAll) rather than rebuilt on every
+// keystroke, so the search input never loses focus while typing.
+// Three filters, matching what the owner asked for: Name (free-text
+// search), Deployment area (which project it's currently at, or company
+// storage), and Held by (which team member currently has it, or
+// unassigned/nobody).
+let invSearch = '';
+let invDeployedFilter = ''; // '' = all, 'storage' = company storage, else a project id (string)
+let invHolderFilter = ''; // '' = all, 'unassigned' = no current holder, else a team_member id (string)
+
 // Resolves every equipment item's photo (if any) to a fresh signed URL, all
 // at once — the registry is small enough that batch-resolving up front (vs.
 // logs.js's lazy-per-row approach) keeps the table simple with no
@@ -103,12 +117,12 @@ async function paintAll() {
   ]);
   const photoUrls = await resolvePhotoUrls(equipment);
   cache = { equipment, requests, transfers, photoUrls };
-  const pendingTransfers = transfers.filter((t) => t.status === 'pending');
 
   content.innerHTML = `
     <div class="card" style="margin-bottom:18px;">
       <h3 style="margin:0 0 10px;">Inventory</h3>
-      ${equipmentTableHTML(equipment, pendingTransfers)}
+      <div id="eq-inv-filters"></div>
+      <div id="eq-inv-table"></div>
     </div>
     <div class="card" style="margin-bottom:18px;">
       <h3 style="margin:0 0 10px;">Requests</h3>
@@ -120,9 +134,111 @@ async function paintAll() {
     </div>
   `;
 
-  wireEquipmentTable(equipment, pendingTransfers);
+  renderInventoryFilters();
+  renderInventoryTable();
   wireRequestsTable(requests, equipment);
   wireTransfersTable(transfers, equipment);
+}
+
+// Applies the three inventory filters (name search, deployment area, held
+// by) to `cache.equipment` — pure client-side, no re-fetch.
+function filteredInventory(equipment) {
+  return equipment.filter((eq) => {
+    if (invDeployedFilter === 'storage' && eq.current_project_id != null) return false;
+    if (invDeployedFilter && invDeployedFilter !== 'storage' && String(eq.current_project_id) !== invDeployedFilter) return false;
+    if (invHolderFilter === 'unassigned' && eq.current_holder_id != null) return false;
+    if (invHolderFilter && invHolderFilter !== 'unassigned' && String(eq.current_holder_id) !== invHolderFilter) return false;
+    if (invSearch) {
+      const q = invSearch.trim().toLowerCase();
+      const hay = [eq.name, eq.category, eq.asset_tag].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+// Deployment-area options come from every project in state.projects (not
+// just ones equipment currently sits at), same reasoning as elsewhere in
+// this file: a Site account's state.projects is already RLS-limited to
+// what they can see, and listing every possible destination is more useful
+// than only the ones currently occupied. "Held by" options come from
+// state.teamMembers the same way.
+function inventoryFiltersHTML() {
+  return `
+    <div class="filter-bar" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px;">
+      <input type="text" class="filter-search" id="eq-inv-search" placeholder="Search name…" value="${esc(invSearch)}">
+      <select class="filter-select" id="eq-inv-deployed-filter">
+        <option value="">All deployment areas</option>
+        <option value="storage" ${invDeployedFilter === 'storage' ? 'selected' : ''}>In company storage</option>
+        ${state.projects
+          .map((p) => `<option value="${p.id}" ${String(p.id) === invDeployedFilter ? 'selected' : ''}>${esc(p.name)}</option>`)
+          .join('')}
+      </select>
+      <select class="filter-select" id="eq-inv-holder-filter">
+        <option value="">All held by</option>
+        <option value="unassigned" ${invHolderFilter === 'unassigned' ? 'selected' : ''}>Unassigned / nobody</option>
+        ${state.teamMembers
+          .map((m) => `<option value="${m.id}" ${String(m.id) === invHolderFilter ? 'selected' : ''}>${esc(m.full_name)}</option>`)
+          .join('')}
+      </select>
+      <a href="#" id="eq-inv-clear-filters" class="hint">Clear filters</a>
+    </div>
+  `;
+}
+
+function renderInventoryFilters() {
+  const el = document.getElementById('eq-inv-filters');
+  if (!el) return;
+  el.innerHTML = inventoryFiltersHTML();
+  const searchEl = document.getElementById('eq-inv-search');
+  if (searchEl) searchEl.addEventListener('input', (e) => { invSearch = e.target.value; renderInventoryTable(); });
+  const deployedEl = document.getElementById('eq-inv-deployed-filter');
+  if (deployedEl) deployedEl.addEventListener('change', (e) => { invDeployedFilter = e.target.value; renderInventoryTable(); });
+  const holderEl = document.getElementById('eq-inv-holder-filter');
+  if (holderEl) holderEl.addEventListener('change', (e) => { invHolderFilter = e.target.value; renderInventoryTable(); });
+  const clearEl = document.getElementById('eq-inv-clear-filters');
+  if (clearEl)
+    clearEl.addEventListener('click', (e) => {
+      e.preventDefault();
+      invSearch = '';
+      invDeployedFilter = '';
+      invHolderFilter = '';
+      renderInventoryFilters();
+      renderInventoryTable();
+    });
+}
+
+// Renders just the Inventory table (and its "Showing X of Y" line) from
+// the current filter state against the already-fetched `cache.equipment` —
+// called on every filter change, and once after each real paintAll()
+// refetch. Row action buttons (Transfer/Edit) are re-wired every time
+// since the table markup is rebuilt.
+function renderInventoryTable() {
+  const el = document.getElementById('eq-inv-table');
+  if (!el) return;
+  const pendingTransfers = cache.transfers.filter((t) => t.status === 'pending');
+  if (cache.equipment.length === 0) {
+    el.innerHTML = `<div class="empty">${ICONS.empty}<div class="lead">No equipment registered yet</div>${isApprover() ? 'Use "Register equipment" above to add your first power tool or piece of equipment.' : 'Ask an Admin to register your power tools and equipment here.'}</div>`;
+    return;
+  }
+  const filtered = filteredInventory(cache.equipment);
+  const countLine = `<div class="hint" style="margin-bottom:8px;">Showing ${filtered.length} of ${cache.equipment.length}</div>`;
+  const body =
+    filtered.length === 0
+      ? `<div class="empty">${ICONS.empty}<div class="lead">No equipment matches your filters</div><a href="#" id="eq-inv-clear-filters-2">Clear filters</a></div>`
+      : equipmentTableHTML(filtered, pendingTransfers);
+  el.innerHTML = countLine + body;
+  wireEquipmentTable(filtered, pendingTransfers);
+  const clear2 = document.getElementById('eq-inv-clear-filters-2');
+  if (clear2)
+    clear2.addEventListener('click', (e) => {
+      e.preventDefault();
+      invSearch = '';
+      invDeployedFilter = '';
+      invHolderFilter = '';
+      renderInventoryFilters();
+      renderInventoryTable();
+    });
 }
 
 function equipmentTableHTML(equipment, pendingTransfers) {
